@@ -1,0 +1,94 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.graphics.*
+import scoop.graphics.text.*
+
+public struct CodeTokenStyle(val category: String, val style: SpanStyle)
+
+public class CodeEditorTheme public constructor(
+    public val foreground: Color,
+    public val background: Color,
+    public val gutter: Color,
+    public val caret: Color,
+    public val selection: Color,
+    tokenStyles: List<CodeTokenStyle>
+) {
+    private val styles = HashMap<String, SpanStyle>()
+    init {
+        for (item in tokenStyles)
+            styles.put(item.category, item.style)
+    }
+    public fun tokenStyle(category: String): SpanStyle? = styles[category]
+}
+
+private fun tokenPalette(
+    keyword: Color,
+    comment: Color,
+    literal: Color,
+    number: Color,
+    type: Color
+): Array<CodeTokenStyle> {
+    val commentStyle = spanStyle {
+        color = Some(comment);
+        slant = Some(FontSlant.Italic)
+    }
+    val keywordStyle = spanStyle {
+        color = Some(keyword);
+        weight = Some(600)
+    }
+    val valueStyle = spanStyle { color = Some(number) }
+    val typeStyle = spanStyle { color = Some(type) }
+    return [
+        CodeTokenStyle("keyword", keywordStyle),
+        CodeTokenStyle("comment", commentStyle),
+        CodeTokenStyle("string", spanStyle { color = Some(literal) }),
+        CodeTokenStyle("number", valueStyle),
+        CodeTokenStyle("literal", valueStyle),
+        CodeTokenStyle("type", typeStyle),
+        CodeTokenStyle("annotation", typeStyle)
+    ]
+}
+
+public fun lightCodeTheme(): CodeEditorTheme = CodeEditorTheme(
+    Color(0.12, 0.14, 0.18), Color.White, Color(0.41, 0.44, 0.49), Color(0.12, 0.22, 0.40), Color(
+        0.56,
+        0.75,
+        1.0,
+        0.68
+    ),
+    tokenPalette(
+        Color(0.42, 0.12, 0.58),
+        Color(0.20, 0.40, 0.25),
+        Color(0.57, 0.14, 0.12),
+        Color(0.04, 0.32, 0.55),
+        Color(0.03, 0.36, 0.39)
+    )
+)
+
+public fun darkCodeTheme(): CodeEditorTheme = CodeEditorTheme(
+    Color(0.89, 0.90, 0.92), Color(0.10, 0.11, 0.13), Color(0.62, 0.65, 0.69), Color.White, Color(
+        0.25,
+        0.41,
+        0.63,
+        0.85
+    ),
+    tokenPalette(
+        Color(0.82, 0.64, 0.96),
+        Color(0.57, 0.74, 0.56),
+        Color(0.98, 0.67, 0.57),
+        Color(0.64, 0.82, 0.98),
+        Color(0.46, 0.85, 0.83)
+    )
+)
+
+public fun highContrastCodeTheme(): CodeEditorTheme = CodeEditorTheme(
+    Color.White, Color.Black, Color.White, Color(1.0, 1.0, 0.0), Color(0.0, 0.32, 0.67),
+    tokenPalette(
+        Color(1.0, 0.83, 0.40),
+        Color(0.68, 0.98, 0.58),
+        Color(1.0, 0.66, 0.86),
+        Color(0.54, 0.9, 1.0),
+        Color(0.70, 0.83, 1.0)
+    )
+)

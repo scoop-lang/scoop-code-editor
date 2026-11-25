@@ -87,7 +87,9 @@ private fun CodeDocument.commitPlan(
 ) {
     val oldVersion = version
     val changed = ArrayList<CodeEditorState>()
+    val previous = CodeSnapshot(root, oldVersion)
     publishRoot(plan.root)
+    tokenCache.changed(previous, this, plan.mapping)
     mapFoldAnchors(providedFolds, this, plan.mapping)
     decorationStore.map(plan.mapping)
     for (view in views) {

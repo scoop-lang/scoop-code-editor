@@ -9,7 +9,7 @@
 "scoop:scoop.ui.editor" = { version = "0.1.0", path = "../scoop-code-editor" }
 ```
 
-两个视图可以从同一份文档开始，各自拥有焦点、选区、滚动和扩展。下面的左侧视图支持用主修饰键加 F 打开查找面板。滚动条、查找和转到行列面板沿用宿主的 `ThemeSource`。独立挂载时使用内置浅色主题。使用 Scoop UI 控件的应用在 `context(themeSource) { Application().run(host) }` 中挂载。
+两个视图可以从同一份文档开始，共享语法 token，各自选择配色并拥有焦点、选区、折叠、滚动和扩展。下面的左侧视图支持用主修饰键加 F 打开查找面板。滚动条、查找和转到行列面板沿用宿主的 `ThemeSource`。独立挂载时使用内置浅色主题。使用 Scoop UI 控件的应用在 `context(themeSource) { Application().run(host) }` 中挂载。
 
 ```kotlin
 import scoop.ui.*

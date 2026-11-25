@@ -1,0 +1,221 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+/** States are immutable. Equal states tokenize the same subsequent lines identically. */
+public interface CodeTokenState {
+    public fun same(other: CodeTokenState): Boolean
+}
+
+public struct CodeToken(val range: Utf8Range, val category: String)
+
+public class CodeTokenLine public constructor(
+    public val tokens: Array<CodeToken>,
+    public val endState: CodeTokenState
+)
+
+public interface CodeTokenizer {
+    public val initialState: CodeTokenState
+    public fun tokenizeLine(text: String, state: CodeTokenState): CodeTokenLine
+}
+
+internal class LexRow(val incoming: CodeTokenState, val value: CodeTokenLine)
+
+private class TokenRows(
+    val first: Long,
+    val rows: ArrayList<LexRow>,
+    val offset: Long,
+    var length: Long
+) {
+    val end: Long get() = first + length
+    fun row(line: Long): LexRow = rows[offset + line - first]
+    fun slice(start: Long, limit: Long, newFirst: Long): TokenRows = TokenRows(
+        newFirst,
+        rows,
+        offset + start - first,
+        limit - start
+    )
+}
+
+private struct ChangedLineRange(val start: Long, val end: Long)
+
+internal class TokenCache {
+    private var spans = ArrayList<TokenRows>()
+    private var verified = 0L
+    fun clear() {
+        spans.clear();
+        verified = 0L
+    }
+    private fun next(line: Long): Long {
+        var low = 0L
+        var high = spans.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (spans[mid].end <= line) low = mid + 1L else high = mid
+        }
+        return low
+    }
+    private fun spanAt(line: Long): TokenRows? {
+        val i = next(line)
+        if (i == spans.size || spans[i].first > line) return None
+        return Some(spans[i])
+    }
+    private fun insert(rows: ArrayList<TokenRows>, at: Long, fresh: ArrayList<LexRow>) {
+        val before = if (rows.size > 0L) Some(rows[rows.size - 1L]) else None
+        if (before?.end ==
+            Some(at) &&
+            before!!.rows.size ==
+            before!!.offset +
+            before!!.length &&
+            before!!.rows.size +
+            fresh.size <=
+            256L
+        ) {
+            for (r in fresh)
+                before!!.rows.add(r)
+            before!!.length += fresh.size
+        } else
+            rows.add(TokenRows(at, fresh, 0L, fresh.size))
+    }
+    private fun replace(start: Long, fresh: ArrayList<LexRow>) {
+        val end = start + fresh.size
+        if (spans.size == 0L || spans[spans.size - 1L].end <= start) {
+            insert(spans, start, fresh);
+            return
+        }
+        val updated = ArrayList<TokenRows>()
+        var i = 0L
+        while (i < spans.size && spans[i].end <= start) {
+            updated.add(spans[i]);
+            i += 1L
+        }
+        if (i < spans.size && spans[i].first < start)
+            updated.add(spans[i].slice(spans[i].first, start, spans[i].first))
+        insert(updated, start, fresh)
+        while (i < spans.size && spans[i].end <= end)
+            i += 1L
+        if (i < spans.size && spans[i].first < end) {
+            updated.add(spans[i].slice(end, spans[i].end, end));
+            i += 1L
+        }
+        while (i < spans.size) {
+            updated.add(spans[i]);
+            i += 1L
+        }
+        spans = updated
+    }
+
+    fun tokens(doc: CodeDocument, line: Long, lexer: CodeTokenizer): Array<CodeToken> {
+        if (line < verified) return spanAt(line)!!.row(line).value.tokens
+        var incoming = if (verified == 0L)
+            lexer.initialState
+        else
+            spanAt(verified - 1L)!!.row(verified - 1L).value.endState
+        while (verified <= line) {
+            val existing = spanAt(verified)
+            if (existing?.row(verified)?.incoming?.same(incoming) == Some(true)) {
+                verified = existing!!.end
+                incoming = existing!!.row(verified - 1L).value.endState
+                continue
+            }
+            val fresh = ArrayList<LexRow>()
+            var n = verified
+            while (n <= line && fresh.size < 256L) {
+                val cached = spanAt(n)
+                if (fresh.size > 0L && cached?.row(n)?.incoming?.same(incoming) == Some(true)) break
+                val range = doc.lineRange(n)
+                val result = lexer.tokenizeLine(doc.read(range), incoming)
+                var edge = 0L
+                for (t in result.tokens) {
+                    val r = t.range
+                    if (r.start <
+                        edge ||
+                        r.end <=
+                        r.start ||
+                        r.end >
+                        range.end -
+                        range.start ||
+                        t.category.byteLength ==
+                        0L ||
+                        !scalarBoundary(doc.root, range.start + r.start) ||
+                        !scalarBoundary(doc.root, range.start + r.end)
+                    )
+                        throw IllegalArgumentException(Some("invalid token range or category"))
+                    edge = r.end
+                }
+                fresh.add(LexRow(incoming, result))
+                incoming = result.endState
+                n += 1L
+            }
+            replace(verified, fresh)
+            verified = n
+        }
+        return spanAt(line)!!.row(line).value.tokens
+    }
+
+    fun changed(old: CodeSnapshot, doc: CodeDocument, map: CodeEditMap) {
+        if (spans.size == 0L || map.changes.size == 0L) return
+        if (old.positionAt(map.changes[0L].oldRange.start).line >= spans[spans.size - 1L].end)
+            return
+        val dirty = ArrayList<ChangedLineRange>()
+        for (c in map.changes) {
+            val a = old.positionAt(c.oldRange.start).line
+            val b = old.positionAt(c.oldRange.end).line + 1L
+            val last = dirty.size - 1L
+            if (last >= 0L && a <= dirty[last].end)
+                dirty[last] = ChangedLineRange(
+                    dirty[last].start,
+                    if (b > dirty[last].end) b else dirty[last].end
+                )
+            else
+                dirty.add(ChangedLineRange(a, b))
+        }
+        if (verified > dirty[0L].start) verified = dirty[0L].start
+        val updated = ArrayList<TokenRows>()
+        var d = 0L
+        for (span in spans) {
+            var n = span.first
+            while (n < span.end) {
+                while (d < dirty.size && dirty[d].end <= n)
+                    d += 1L
+                if (d < dirty.size && dirty[d].start <= n) {
+                    n = dirty[d].end;
+                    continue
+                }
+                val end = if (d < dirty.size && dirty[d].start < span.end)
+                    dirty[d].start
+                else
+                    span.end
+                val mapped = map.map(old.lineRange(n).start, CodeStickiness.After)
+                updated.add(span.slice(n, end, doc.positionAt(mapped).line))
+                n = end
+            }
+        }
+        spans = updated
+    }
+}
+
+public fun CodeDocument.lineTokens(line: Long): Array<CodeToken> {
+    if (line < 0L || line >= lineCount) throw IllegalArgumentException(Some("invalid token line"))
+    val config = language ?: return []
+    val lexer = config.tokenizer ?: return []
+    return tokenCache.tokens(this, line, lexer)
+}
+
+internal fun EditorInk.collectTokenStyles(range: Utf8Range, result: ArrayList<CodeDecoration>) {
+    val doc = editor.document
+    val config = doc.language ?: return
+    val lexer = config.tokenizer ?: return
+    val first = doc.positionAt(range.start).line
+    val last = doc.positionAt(range.end).line
+    for (n in first..<last + 1L) {
+        val start = doc.lineRange(n).start
+        for (token in doc.tokenCache.tokens(doc, n, lexer)) {
+            val a = start + token.range.start
+            val b = start + token.range.end
+            if (a >= range.end || b <= range.start) continue
+            val style = editor.options.theme.tokenStyle(token.category) ?: continue
+            result.add(CodeDecoration(Utf8Range(a, b), CodeDecorationStyle(font = Some(style))))
+        }
+    }
+}

@@ -158,6 +158,30 @@ private class FontWindow {
                                 assertEquals(width, caret.x)
                                 assertEquals(0L, doc.version)
                                 background.close()
+                                doc.language = Some(scoopCodeLanguage())
+                                doc.applyEdits(doc.version, [CodeEdit(Utf8Range(0L, 0L), "val ")])
+                                editor.options = CodeEditorOptions(
+                                    softWrap = true,
+                                    theme = darkCodeTheme()
+                                )
+                            }
+
+                            case 4 -> {
+                                assertEquals(1L, doc.version)
+                                val keyword = editor.options.theme.tokenStyle("keyword")!!
+                                assertTrue(row.ink.runs[0L].layers[0L].font!! === keyword)
+                                assertEquals(editor.options.theme.foreground, row.ink.style.color)
+                                editor.options = CodeEditorOptions(
+                                    softWrap = true,
+                                    theme = highContrastCodeTheme()
+                                )
+                            }
+
+                            case 5 -> {
+                                assertEquals(1L, doc.version)
+                                assertEquals(Color.Black, frame.options.background)
+                                val keyword = editor.options.theme.tokenStyle("keyword")!!
+                                assertTrue(row.ink.runs[0L].layers[0L].font!! === keyword)
                                 finished = true
                                 active.requestExit()
                             }

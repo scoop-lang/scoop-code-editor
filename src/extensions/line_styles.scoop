@@ -52,6 +52,7 @@ internal fun EditorInk.decorationsFor(line: Utf8Range): Array<CodeDecoration> {
         input.reverseMap?.map(line.end, CodeStickiness.After) ?: line.end
     )
     val result = ArrayList<CodeDecoration>()
+    collectTokenStyles(original, result)
     editor.document.decorationStore.collect(original, result)
     editor.decorationStore.collect(original, result)
     val project = input.previewMap ?: return result.toArray()

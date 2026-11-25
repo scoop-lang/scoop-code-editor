@@ -1,0 +1,185 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.window.*
+
+private class ScoopLexState(val depth: Long, val raw: Boolean) : CodeTokenState {
+    public override fun same(other: CodeTokenState): Boolean {
+        val state = other as? ScoopLexState ?: return false
+        return depth == state.depth && raw == state.raw
+    }
+}
+
+private val codeKeywords = setOf(
+    "package", "import", "as", "typealias", "class", "struct", "enum", "interface",
+    "object", "fun", "val", "var", "vararg", "constructor", "init", "public", "private", "internal",
+    "protected", "open",
+    "abstract", "final", "override", "companion", "operator", "infix", "in", "is", "if", "else",
+    "when", "case", "while",
+    "do", "for", "break", "continue", "return", "throw", "try", "catch", "finally", "this", "super",
+    "get", "set", "where"
+)
+
+private fun Array<Byte>.ascii(i: Long): Int {
+    if (i >= size) return -1
+    val value = this[i].toInt()
+    return if (value < 0) value + 256 else value
+}
+
+private fun digit(c: Int): Boolean = c >= 48 && c <= 57
+
+private fun hexDigit(c: Int): Boolean = digit(c) || c >= 65 && c <= 70 || c >= 97 && c <= 102
+
+private fun nameByte(c: Int): Boolean = c ==
+    95 ||
+    c >=
+    65 &&
+    c <=
+    90 ||
+    c >=
+    97 &&
+    c <=
+    122 ||
+    c >=
+    128
+
+private fun Array<Byte>.triple(i: Long): Boolean = ascii(i) ==
+    34 &&
+    ascii(i + 1L) ==
+    34 &&
+    ascii(i + 2L) ==
+    34
+
+private fun Array<Byte>.numberEnd(start: Long): Long {
+    var i = start
+    val lead = ascii(i + 1L)
+    if (ascii(i) == 48 && (lead == 120 || lead == 88 || lead == 98 || lead == 66)) {
+        val hex = lead == 120 || lead == 88
+        i += 2L
+        while (
+            ascii(i) == 95 || (if (hex) hexDigit(ascii(i)) else ascii(i) == 48 || ascii(i) == 49)
+        )
+            i += 1L
+    } else {
+        while (digit(ascii(i)) || ascii(i) == 95)
+            i += 1L
+        if (ascii(i) == 46 && digit(ascii(i + 1L))) {
+            i += 1L;
+            while (digit(ascii(i)) || ascii(i) == 95)
+                i += 1L
+        }
+        if (ascii(i) == 69 || ascii(i) == 101) {
+            var n = i + 1L
+            if (ascii(n) == 43 || ascii(n) == 45) n += 1L
+            if (digit(ascii(n))) {
+                i = n + 1L
+                while (digit(ascii(i)) || ascii(i) == 95)
+                    i += 1L
+            }
+        }
+    }
+    while (
+        ascii(i) ==
+            85 ||
+            ascii(i) ==
+            117 ||
+            ascii(i) ==
+            76 ||
+            ascii(i) ==
+            108 ||
+            ascii(i) ==
+            70 ||
+            ascii(i) ==
+            102
+    )
+        i += 1L
+    return i
+}
+
+internal class ScoopTokenizer : CodeTokenizer {
+    public override val initialState: CodeTokenState = ScoopLexState(0L, false)
+    public override fun tokenizeLine(text: String, state: CodeTokenState): CodeTokenLine {
+        val startState = state as ScoopLexState
+        var depth = startState.depth
+        var raw = startState.raw
+        val bytes = text.toByteArray()
+        val spans = ArrayList<CodeToken>()
+        var i = 0L
+        while (i < bytes.size) {
+            val a = i
+            val c = bytes.ascii(i)
+            val n = bytes.ascii(i + 1L)
+            var category = ""
+            if (depth > 0L || c == 47 && n == 42 && !raw) {
+                if (depth == 0L) {
+                    depth = 1L;
+                    i += 2L
+                }
+                while (i < bytes.size && depth > 0L) {
+                    val ch = bytes.ascii(i)
+                    val next = bytes.ascii(i + 1L)
+                    if (ch == 47 && next == 42) {
+                        depth += 1L;
+                        i += 2L
+                    } else if (ch == 42 && next == 47) {
+                        depth -= 1L;
+                        i += 2L
+                    } else
+                        i += 1L
+                }
+                category = "comment"
+            } else if (raw || bytes.triple(i) || c == 102 && bytes.triple(i + 1L)) {
+                if (!raw) {
+                    if (c == 102) i += 1L;
+                    i += 3L
+                }
+                raw = true
+                while (i < bytes.size && !bytes.triple(i))
+                    i += 1L
+                if (i < bytes.size) {
+                    i += 3L;
+                    raw = false
+                }
+                category = "string"
+            } else if (c == 47 && n == 47) {
+                i = bytes.size
+                category = "comment"
+            } else if (c == 34 || c == 39 || c == 102 && n == 34 || c == 96) {
+                val quote = if (c == 102) n else c
+                i += if (c == 102) 2L else 1L
+                while (i < bytes.size) {
+                    val ch = bytes.ascii(i)
+                    i += 1L
+                    if (ch == quote) break
+                    if (ch == 92 && quote != 96 && i < bytes.size) i += 1L
+                }
+                category = if (quote == 96) "identifier" else "string"
+            } else if (digit(c)) {
+                i = bytes.numberEnd(i)
+                category = "number"
+            } else if (nameByte(c) || c == 64 && nameByte(n)) {
+                i += 1L
+                while (nameByte(bytes.ascii(i)) || digit(bytes.ascii(i)))
+                    i += 1L
+                val word = text.utf8Slice(Utf8Range(a, i))
+                if (c == 64)
+                    category = "annotation"
+                else if (word == "true" || word == "false" || word == "None")
+                    category = "literal"
+                else if (word in codeKeywords)
+                    category = "keyword"
+                else if (c >= 65 && c <= 90) category = "type"
+            } else {
+                i += 1L
+                if (c == 123 || c == 125 || c == 40 || c == 41 || c == 91 || c == 93)
+                    category = "delimiter"
+            }
+            if (category.byteLength > 0L) spans.add(CodeToken(Utf8Range(a, i), category))
+        }
+        val end = if (depth == startState.depth && raw == startState.raw)
+            state
+        else
+            ScoopLexState(depth, raw)
+        return CodeTokenLine(spans.toArray(), end)
+    }
+}

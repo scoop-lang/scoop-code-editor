@@ -71,10 +71,11 @@ public class CodeDocument public constructor(text: String = "", language: CodeLa
     public var language: CodeLanguage? = language
         set(value) {
             field = value
+            tokenCache.clear()
             for (view in views) {
                 view.generatedPairs.clear()
                 view.menuRevision.value += 1L
-                view.mounted?.decorationChanged()
+                view.mounted?.decorationChanged(DecorationUpdate.Metrics)
             }
         }
     internal val decorationStore = DecorationStore(this) { update ->
@@ -82,6 +83,7 @@ public class CodeDocument public constructor(text: String = "", language: CodeLa
             view.mounted?.decorationChanged(update)
     }
     public fun decorations(): CodeDecorations = decorationStore.create()
+    internal val tokenCache = TokenCache()
     internal val providedFolds = ArrayList<FoldAnchor>()
     internal val views = ArrayList<CodeEditorState>()
     internal val history = EditHistory()

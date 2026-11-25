@@ -28,7 +28,8 @@ public class CodeLanguage public constructor(
     public val autoClosingPairs: Array<CodePair> = brackets,
     public val autoCloseBefore: String = ";:.,=}])> \t\r\n",
     public val surroundingPairs: Array<CodePair> = autoClosingPairs,
-    public val enter: ((String, String) -> CodeEnterIndent)? = None
+    public val enter: ((String, String) -> CodeEnterIndent)? = None,
+    public val tokenizer: CodeTokenizer? = None
 ) {
     init {
         for (pair in brackets)
@@ -58,7 +59,8 @@ public fun scoopCodeLanguage(): CodeLanguage {
             CodePair("\"", "\""),
             CodePair("'", "'")
         ],
-        enter = Some({ before, after -> scoopEnterIndent(brackets, before, after) })
+        enter = Some({ before, after -> scoopEnterIndent(brackets, before, after) }),
+        tokenizer = Some(ScoopTokenizer())
     )
 }
 

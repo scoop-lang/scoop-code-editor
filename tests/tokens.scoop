@@ -1,0 +1,101 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.text.repeat
+import scoop.window.*
+
+private class RecordingTokenizer : CodeTokenizer {
+    private val source = ScoopTokenizer()
+    val calls = ArrayList<String>()
+    public override val initialState: CodeTokenState get() = source.initialState
+    public override fun tokenizeLine(text: String, state: CodeTokenState): CodeTokenLine {
+        calls.add(text)
+        return source.tokenizeLine(text, state)
+    }
+}
+
+private fun CodeDocument.colored(line: Long, category: String): String {
+    val out = StringBuilder()
+    val start = lineRange(line).start
+    for (t in lineTokens(line))
+        if (t.category == category)
+            out.append(read(Utf8Range(start + t.range.start, start + t.range.end)))
+    return out.toString()
+}
+
+@Test
+private class IncrementalTokenTests {
+    @Test
+    fun editingAStatefulDelimiterUpdatesAffectedLinesAndRegexUndoRestoresTokens() {
+        val doc = CodeDocument(
+            "val 中=42 /* outer\n /* nested */\n close */ val x=\"\"\"raw\nstill raw\"\"\" // end\nvar z=3",
+            Some(scoopCodeLanguage())
+        )
+        assertEquals("val", doc.colored(0L, "keyword"))
+        assertEquals("42", doc.colored(0L, "number"))
+        assertEquals(" /* nested */", doc.colored(1L, "comment"))
+        assertEquals(" close */", doc.colored(2L, "comment"))
+        assertEquals("\"\"\"raw", doc.colored(2L, "string"))
+        assertEquals("still raw\"\"\"", doc.colored(3L, "string"))
+        assertEquals("// end", doc.colored(3L, "comment"))
+        val e = CodeEditorState(doc)
+        val find = e.find
+        find.options = CodeFindOptions(regex = true)
+        find.query = "(val|var)"
+        val snapshot = doc.snapshot()
+        find.replacement = "private $1"
+        assertEquals(CodeEditResult.Applied, find.replaceAll())
+        assertEquals("privateval", doc.colored(0L, "keyword"))
+        e.undo()
+        assertEquals(
+            snapshot.read(Utf8Range(0L, snapshot.byteLength)),
+            doc.read(Utf8Range(0L, doc.byteLength))
+        )
+        val opener = doc.lineRange(0L).end - "/* outer".byteLength
+        doc.applyEdits(doc.version, [CodeEdit(Utf8Range(opener, opener + 2L), "  ")])
+        assertEquals("/* nested */", doc.colored(1L, "comment"))
+        assertEquals("", doc.colored(2L, "comment"))
+        e.undo()
+        assertEquals(" close */", doc.colored(2L, "comment"))
+        e.close()
+    }
+
+    @Test
+    fun reusesWholeCachedSuffixAndReindexesDisjointChangesAcrossLineBreaks() {
+        val recorder = RecordingTokenizer()
+        val doc = CodeDocument(
+            "val a=1\n".repeat(600L),
+            Some(CodeLanguage(tokenizer = Some(recorder)))
+        )
+        doc.lineTokens(599L)
+        assertEquals(600L, recorder.calls.size)
+        val peer = CodeEditorState(doc)
+        doc.lineTokens(599L)
+        assertEquals(600L, recorder.calls.size)
+        recorder.calls.clear()
+        val at = doc.lineRange(12L).start + 4L
+        doc.applyEdits(doc.version, [CodeEdit(Utf8Range(at, at + 1L), "b")])
+        doc.lineTokens(599L)
+        assertEquals(1L, recorder.calls.size)
+        assertEquals("val b=1", recorder.calls[0L])
+        recorder.calls.clear()
+        val line = doc.lineRange(17L).start
+        val later = doc.lineRange(390L).start
+        doc
+            .applyEdits(
+                doc.version,
+                [
+                    CodeEdit(Utf8Range(line, line), "// x\r\n"),
+                    CodeEdit(Utf8Range(later, later + 3L), "var")
+                ]
+            )
+        doc.lineTokens(600L)
+        assertEquals(3L, recorder.calls.size)
+        assertEquals("// x", doc.colored(17L, "comment"))
+        assertEquals("var", doc.colored(391L, "keyword"))
+        peer.undo()
+        assertEquals("val", doc.colored(390L, "keyword"))
+        assertEquals(601L, doc.lineCount)
+        peer.close()
+    }
+}

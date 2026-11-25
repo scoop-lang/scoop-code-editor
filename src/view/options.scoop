@@ -5,18 +5,19 @@ import scoop.graphics.text.*
 import scoop.ui.component.ScrollbarVisibility
 
 public class CodeEditorOptions public constructor(
+    public val theme: CodeEditorTheme = lightCodeTheme(),
     public val softWrap: Boolean = false,
     public val tabSize: Long = 4L,
     public val lineNumbers: Boolean = true,
     public val text: TextStyle = textStyle {
         families = ["Menlo", "monospace"];
         fontSize = 14.0;
-        color = Color(0.12, 0.14, 0.18)
+        color = theme.foreground
     },
-    public val background: Color = Color.White,
-    public val gutter: Color = Color(0.41, 0.44, 0.49),
-    public val selection: Color = Color(0.56, 0.75, 1.0, 0.68),
-    public val caret: Color = Color(0.12, 0.22, 0.40),
+    public val background: Color = theme.background,
+    public val gutter: Color = theme.gutter,
+    public val selection: Color = theme.selection,
+    public val caret: Color = theme.caret,
     public val insertSpaces: Boolean = false,
     public val indentSize: Long = tabSize,
     public val multiCursorPaste: CodeMultiCursorPaste = CodeMultiCursorPaste.Spread,
