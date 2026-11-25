@@ -1,5 +1,7 @@
 package scoop.ui.editor
 
+import scoop.graphics.text.*
+import scoop.window.*
 import scoop.charset.graphemeBoundaries
 import scoop.text.indexOf
 import scoop.charset.unicodeScalarWidth
@@ -32,9 +34,12 @@ private struct TabRun(val source: Long, val display: Long, val spaces: Long)
 internal class LineProjection private constructor(
     internal val text: String,
     private val tabs: Array<TabRun>,
-    internal val sourceEnd: Long
+    internal val sourceEnd: Long,
+    private val bytes: Long,
+    internal val hints: Array<DisplayInlay> = []
 ) {
-    internal fun displayOffset(source: Long): Long {
+    internal val hasTabs: Boolean get() = tabs.size > 0L
+    private fun tabOffset(source: Long): Long {
         var low = 0L
         var high = tabs.size
         while (low < high) {
@@ -46,8 +51,7 @@ internal class LineProjection private constructor(
         return source + run.display + run.spaces - run.source - 1L
     }
 
-    internal fun sourceOffset(display: Long): Long {
-        if (display >= sourceEnd) return sourceLength()
+    private fun tabSource(display: Long): Long {
         var low = 0L
         var high = tabs.size
         while (low < high) {
@@ -61,19 +65,128 @@ internal class LineProjection private constructor(
         return run.source + 1L + distance - run.spaces
     }
 
-    private fun sourceLength(): Long {
-        if (tabs.size == 0L) return sourceEnd
-        val last = tabs[tabs.size - 1L]
-        return last.source + 1L + sourceEnd - last.display - last.spaces
+    internal fun displayOffset(
+        source: Long,
+        affinity: TextAffinity = TextAffinity.Downstream
+    ): Long {
+        val base = tabOffset(source)
+        var low = 0L
+        var high = hints.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            val offset = hints[mid].hint.offset
+            if (offset < source || offset == source && affinity == TextAffinity.Downstream)
+                low = mid + 1L
+            else
+                high = mid
+        }
+        if (low == 0L) return base
+        val last = hints[low - 1L]
+        return base + last.end - last.base
+    }
+    private fun hintIndex(display: Long): Long {
+        var low = 0L
+        var high = hints.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (hints[mid].start <= display) low = mid + 1L else high = mid
+        }
+        return low - 1L
+    }
+    internal fun sourceOffset(display: Long): Long {
+        if (display >= sourceEnd) return bytes
+        val i = hintIndex(display)
+        if (i < 0L) return tabSource(display)
+        val last = hints[i]
+        return if (display <= last.end)
+            last.hint.offset
+        else
+            tabSource(display - last.end + last.base)
+    }
+    internal fun hasInlay(offset: Long): Boolean = hints.size >
+        0L &&
+        displayOffset(offset, TextAffinity.Upstream) !=
+        displayOffset(offset)
+    internal fun sourcePosition(pos: TextPosition): TextPosition {
+        val source = sourceOffset(pos.byteOffset)
+        val i = hintIndex(pos.byteOffset)
+        if (i < 0L || pos.byteOffset > hints[i].end) return TextPosition(source, pos.affinity)
+        val a = displayOffset(source, TextAffinity.Upstream)
+        val b = displayOffset(source)
+        return TextPosition(
+            source,
+            if (pos.byteOffset - a < b - pos.byteOffset)
+                TextAffinity.Upstream
+            else
+                TextAffinity.Downstream
+        )
+    }
+    internal fun movedPosition(previous: TextPosition, next: TextPosition): TextPosition {
+        val mapped = sourcePosition(next)
+        val i = hintIndex(next.byteOffset)
+        if (i < 0L || next.byteOffset >= hints[i].end) return mapped
+        val a = displayOffset(mapped.byteOffset, TextAffinity.Upstream)
+        val b = displayOffset(mapped.byteOffset)
+        if (previous.byteOffset != a && previous.byteOffset != b) return mapped
+        return TextPosition(
+            mapped.byteOffset,
+            if (next.byteOffset > previous.byteOffset)
+                TextAffinity.Downstream
+            else
+                TextAffinity.Upstream
+        )
+    }
+    internal fun sourceSpans(start: Long, end: Long, emit: (Long, Long) -> Unit) {
+        var at = displayOffset(start)
+        val stop = displayOffset(end, TextAffinity.Upstream)
+        var i = hintIndex(at) + 1L
+        while (i < hints.size && hints[i].start < stop) {
+            val hint = hints[i]
+            if (at < hint.start) emit(at, hint.start)
+            at = hint.end
+            i += 1L
+        }
+        if (at < stop) emit(at, stop)
     }
     internal companion object {
-        internal fun from(text: String, tabSize: Long, suffix: String = ""): LineProjection {
+        internal fun from(
+            text: String,
+            tabSize: Long,
+            suffix: String = "",
+            inlays: Array<LineInlay> = []
+        ): LineProjection {
+            val base = expandTabs(text, tabSize, suffix)
+            if (inlays.size == 0L) return base
+            val shown = StringBuilder()
+            val runs = ArrayList<DisplayInlay>()
+            var at = 0L
+            var extra = 0L
+            for (hint in inlays) {
+                val mark = base.tabOffset(hint.offset)
+                if (mark > at) shown.append(base.text.utf8Slice(Utf8Range(at, mark)))
+                shown.append(hint.text.label)
+                val start = mark + extra
+                extra += hint.text.label.byteLength
+                runs.add(DisplayInlay(hint, mark, start, mark + extra))
+                at = mark
+            }
+            if (at < base.text.byteLength)
+                shown.append(base.text.utf8Slice(Utf8Range(at, base.text.byteLength)))
+            return LineProjection(
+                shown.toString(),
+                base.tabs,
+                base.sourceEnd + extra,
+                text.byteLength,
+                runs.toArray()
+            )
+        }
+        private fun expandTabs(text: String, tabSize: Long, suffix: String): LineProjection {
             if (tabSize <= 0L) throw IllegalArgumentException(Some("tab size must be positive"))
             if (text.indexOf("\t") < 0L)
                 return LineProjection(
                     if (suffix.byteLength == 0L) text else text + suffix,
                     [],
-                    text.byteLength
+                    text.byteLength, text.byteLength
                 )
             val boundaries = graphemeBoundaries(text)
             val output = StringBuilder()
@@ -106,7 +219,7 @@ internal class LineProjection private constructor(
                 scalar += 1L
             }
             output.append(suffix)
-            return LineProjection(output.toString(), tabs.toArray(), display)
+            return LineProjection(output.toString(), tabs.toArray(), display, text.byteLength)
         }
     }
 }

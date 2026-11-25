@@ -14,14 +14,16 @@ internal class ShapedLine(
     val tabSize: Long,
     val fontsRevision: Long,
     val runs: Array<EditorStyleRun> = [],
-    val suffix: String = ""
+    val suffix: String = "",
+    val inlays: Array<LineInlay> = [],
+    val hintColor: Color? = None
 ) {
     private var owners = 1L
     internal fun display(
         source: Long,
         affinity: TextAffinity = TextAffinity.Downstream
     ): TextPosition {
-        val offset = projection.displayOffset(source)
+        val offset = projection.displayOffset(source, affinity)
         val boundaries = layout.graphemeBoundaries
         var low = 0L
         var high = boundaries.size - 1L
@@ -42,7 +44,9 @@ internal class ShapedLine(
         tab: Long,
         fontRevision: Long,
         colors: Array<EditorStyleRun>,
-        ending: String
+        ending: String,
+        hints: Array<LineInlay>,
+        color: Color?
     ): Boolean = source ==
         text &&
         style ===
@@ -55,7 +59,10 @@ internal class ShapedLine(
         fontRevision &&
         suffix ==
         ending &&
-        sameRuns(runs, colors)
+        sameRuns(runs, colors) &&
+        sameInlays(inlays, hints) &&
+        hintColor ==
+        color
 
     internal fun retain(): ShapedLine {
         owners += 1L;
@@ -78,10 +85,14 @@ internal class ScreenRow(
 ) {
     internal fun display(position: TextPosition): TextPosition = ink
         .display(position.byteOffset - range.start, position.affinity)
-    internal fun source(position: TextPosition): TextPosition = TextPosition(
-        range.start + ink.projection.sourceOffset(position.byteOffset),
-        position.affinity
-    )
+    internal fun source(position: TextPosition): TextPosition {
+        val local = ink.projection.sourcePosition(position)
+        return TextPosition(range.start + local.byteOffset, local.affinity)
+    }
+    internal fun moved(previous: TextPosition, next: TextPosition): TextPosition {
+        val local = ink.projection.movedPosition(previous, next)
+        return TextPosition(range.start + local.byteOffset, local.affinity)
+    }
 }
 
 internal class EditorFrame(

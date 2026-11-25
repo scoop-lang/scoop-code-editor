@@ -19,19 +19,22 @@ private fun paintRange(
     val dy = row.top - frame.origin.y
     val paint = Paint(color = color)
     if (start < end) {
-        val a = row.ink.projection.displayOffset(start - row.range.start)
-        val b = row.ink.projection.displayOffset(end - row.range.start)
-        for (box in row.ink.layout.selection(TextRange(a, b))) {
-            val r = box.rect
-            canvas
-                .drawRect(
-                    if (underline)
-                        Rect(dx + r.x, dy + r.y + r.height - 1.0, r.width, 1.0)
-                    else
-                        Rect(dx + r.x, dy + r.y, r.width, r.height),
-                    paint
-                )
-        }
+        row
+            .ink
+            .projection
+            .sourceSpans(start - row.range.start, end - row.range.start) { a, b ->
+                for (box in row.ink.layout.selection(TextRange(a, b))) {
+                    val r = box.rect
+                    canvas
+                        .drawRect(
+                            if (underline)
+                                Rect(dx + r.x, dy + r.y + r.height - 1.0, r.width, 1.0)
+                            else
+                                Rect(dx + r.x, dy + r.y, r.width, r.height),
+                            paint
+                        )
+                }
+            }
     }
     if (!underline && range.start <= row.range.end && range.end > row.range.end) {
         val edge = row.ink.layout.caret(TextPosition(row.ink.projection.text.byteLength))

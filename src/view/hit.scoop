@@ -1,13 +1,14 @@
 package scoop.ui.editor
 
 import scoop.graphics.*
-import scoop.graphics.text.TextPosition
+import scoop.graphics.text.*
 import scoop.ui.View
 
 public enum CodeHitTarget {
     Text(val position: TextPosition), Gutter(val line: Long), FoldControl(val line: Long),
     ContentWidget(val offset: Long, val view: View), OverlayWidget(val view: View),
-    LineWidget(val line: Long, val side: CodeZoneSide, val view: View)
+    LineWidget(val line: Long, val side: CodeZoneSide, val view: View),
+    Inlay(val offset: Long, val side: CodeInlaySide, val text: CodeInlayText)
 }
 
 internal class PositionedWidget(val widget: EditorWidget, val bounds: Rect)
@@ -43,6 +44,10 @@ public fun CodeEditorState.hitTest(windowPoint: Point): CodeHitTarget? {
             }
         )
     }
+    when (val hint = frame.inlayAt(point)) {
+        case Some(val h) -> return Some(CodeHitTarget.Inlay(h.offset, h.side, h.text))
+        case None -> {}
+    }
     val pos = frame.hit(point) ?: return None
     val fold = frame.foldTarget(point)
     if (fold != None)
@@ -53,4 +58,35 @@ public fun CodeEditorState.hitTest(windowPoint: Point): CodeHitTarget? {
         else
             CodeHitTarget.Text(pos)
     )
+}
+
+internal fun EditorFrame.inlayAt(point: Point): LineInlay? {
+    if (point.x < gutter) return None
+    val y = point.y + origin.y
+    for (row in rows) {
+        if (y < row.top || y >= row.top + row.height) continue
+        val x = point.x - gutter + origin.x
+        for (h in row.ink.projection.hints)
+            for (box in row.ink.layout.selection(TextRange(h.start, h.end))) {
+                val r = box.rect
+                if (x >=
+                    r.x &&
+                    x <
+                    r.x +
+                    r.width &&
+                    y >=
+                    row.top +
+                    r.y &&
+                    y <
+                    row.top +
+                    r.y +
+                    r.height
+                ) {
+                    val pos = original(TextPosition(row.range.start + h.hint.offset))
+                    return Some(LineInlay(pos.byteOffset, h.hint.side, h.hint.text))
+                }
+            }
+        break
+    }
+    return None
 }

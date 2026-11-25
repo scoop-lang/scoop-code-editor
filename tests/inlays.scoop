@@ -1,0 +1,77 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.*
+import scoop.test.*
+import scoop.window.*
+
+@Test
+private class InlayTests {
+    @Test
+    fun sourceSpansTabsAndFoldSuffixShareCoordinatesWithMultipleHintsAtOneAnchor() {
+        val first = CodeInlayText("X:")
+        val close = CodeInlayText(")")
+        val name = CodeInlayText("名:")
+        val last = CodeInlayText("z")
+        val p = LineProjection
+            .from(
+                "a\t中",
+                4L,
+                "  …",
+                [
+                    LineInlay(1L, CodeInlaySide.Before, first),
+                    LineInlay(1L, CodeInlaySide.After, close),
+                    LineInlay(2L, CodeInlaySide.Before, name),
+                    LineInlay(5L, CodeInlaySide.After, last)
+                ]
+            )
+        assertEquals("aX:)   名:中z  …", p.text)
+        assertEquals(1L, p.displayOffset(1L, TextAffinity.Upstream))
+        assertEquals(4L, p.displayOffset(1L))
+        assertEquals(2L, p.sourceOffset(10L))
+        assertEquals(5L, p.sourceOffset(p.text.byteLength))
+        assertEquals(TextPosition(1L, TextAffinity.Upstream), p.sourcePosition(TextPosition(1L)))
+        assertEquals(
+            TextPosition(1L, TextAffinity.Downstream),
+            p.movedPosition(TextPosition(1L), TextPosition(2L))
+        )
+        val result = StringBuilder()
+        p.sourceSpans(0L, 5L) { a, b -> result.append(p.text.utf8Slice(Utf8Range(a, b))) }
+        assertEquals("a   中", result.toString())
+    }
+    @Test
+    fun logicalMovementVisitsBothSidesAndTypingMovesTheProperAnchorsWithoutChangingClipboard() {
+        val doc = CodeDocument("a中b")
+        val editor = CodeEditorState(doc)
+        val shared = doc.inlayHints()
+        val own = editor.inlayHints()
+        val before = CodeInlayText("参数:")
+        val after = CodeInlayText("!")
+        assertTrue(shared.set(0L, [CodeInlayHint(1L, CodeInlaySide.Before, before)]))
+        assertTrue(own.set(0L, [CodeInlayHint(1L, CodeInlaySide.After, after)]))
+        editor.moveHorizontal(true)
+        assertEquals(TextPosition(1L, TextAffinity.Upstream), editor.selections.primary.cursor)
+        editor.moveHorizontal(true)
+        assertEquals(TextPosition(1L, TextAffinity.Downstream), editor.selections.primary.cursor)
+        editor.moveHorizontal(true)
+        assertEquals(4L, editor.selections.primary.cursor.byteOffset)
+        editor.moveHorizontal(false)
+        editor.moveHorizontal(false)
+        assertEquals(TextPosition(1L, TextAffinity.Upstream), editor.selections.primary.cursor)
+        editor.typeText("w")
+        val line = doc.lineRange(0L)
+        val values = ArrayList<CodeDecoration>()
+        doc.decorationStore.collect(line, values)
+        editor.decorationStore.collect(line, values)
+        val hints = lineInlays(line, values.toArray())
+        assertTrue(hints[0L].text === after && hints[0L].offset == 1L)
+        assertTrue(hints[1L].text === before && hints[1L].offset == 2L)
+        assertFalse(own.set(0L, []))
+        editor.selectAll()
+        assertEquals("aw中b", editor.copyContent().text)
+        assertEquals(CodeEditResult.Applied, editor.undo())
+        assertEquals("a中b", doc.read(doc.lineRange(0L)))
+        shared.close()
+        own.close()
+        assertFalse(doc.decorationStore.hasInlays || editor.decorationStore.hasInlays)
+    }
+}

@@ -29,10 +29,10 @@ public fun CodeEditorState.moveHorizontal(forward: Boolean, extend: Boolean = fa
     for (s in input.values) {
         val range = s.range
         val next = if (!extend && range.start != range.end) {
-            if (forward) range.end else range.start
+            TextPosition(if (forward) range.end else range.start)
         } else
-            adjacentGrapheme(document, s.cursor.byteOffset, forward)
-        val cursor = folding.visibleDestination(s.cursor, TextPosition(next))
+            stepGrapheme(s.cursor, forward)
+        val cursor = folding.visibleDestination(s.cursor, next)
         output.add(CodeSelection(if (extend) s.anchor else cursor, cursor))
     }
     setSelections(output, input.primaryIndex)

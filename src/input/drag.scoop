@@ -54,6 +54,18 @@ private fun EditorInk.pointerUnit(
 
 internal fun EditorInk.beginDrag(point: Point, count: Long, mods: Modifiers) {
     val frame = currentFrame() ?: return
+    when (val mark = frame.inlayAt(point)) {
+        case Some(val hint) ->
+            when (val click = hint.text.onClick) {
+                case Some(val invoke) -> {
+                    invoke(editor, hint.offset);
+                    return
+                }
+
+                case None -> {}
+            }
+        case None -> {}
+    }
     val hit = frame.hit(point) ?: return
     area.requestFocus(FocusOrigin.Pointer)
     val toggle = frame.foldTarget(point)

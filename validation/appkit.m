@@ -29,6 +29,11 @@ static int measureEditor(void *rawView, int step) {
         [view insertText:(step == 2 ? @"中" : @"q") replacementRange:NSMakeRange(NSNotFound, 0)];
         return 0;
     }
+    if (step == 5) {
+        NSRange actual;
+        NSRect caret = [view firstRectForCharacterRange:view.selectedRange actualRange:&actual];
+        return view.hasMarkedText && !NSIsEmptyRect(caret);
+    }
     if (step == 3) {
         id field = editorField(view, nil);
         NSString *value = [field accessibilityValue];

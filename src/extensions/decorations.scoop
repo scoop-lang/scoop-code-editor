@@ -11,7 +11,9 @@ public struct CodeDecorationStyle(
     val background: Color? = None,
     val underline: Color? = None,
     val gutter: Color? = None,
-    val font: SpanStyle? = None
+    val font: SpanStyle? = None,
+    val before: CodeInlayText? = None,
+    val after: CodeInlayText? = None
 )
 
 public struct CodeDecoration(
@@ -29,6 +31,8 @@ private fun decorationUpdate(values: List<CodeDecoration>): DecorationUpdate {
     var update = DecorationUpdate.Paint
     for (value in values) {
         val style = value.style
+        if (style.before?.label != None || style.after?.label != None)
+            return DecorationUpdate.Metrics
         when (val font = style.font) {
             case Some(val f) -> {
                 if (f.families?.size !=
@@ -69,6 +73,7 @@ private class IndexedDecoration(val value: CodeDecoration, val order: Long, var 
 public class CodeDecorations internal constructor(private val store: DecorationStore) : Closeable {
     private var values: Array<CodeDecoration> = []
     private var sorted: Array<IndexedDecoration> = []
+    internal var hasInlays = false
     private var closed = false
     private var update = DecorationUpdate.Paint
 
@@ -78,6 +83,12 @@ public class CodeDecorations internal constructor(private val store: DecorationS
             if (!validRange(store.doc.root, d.range))
                 throw IllegalArgumentException(Some("invalid decoration range"))
         }
+        hasInlays = false
+        for (d in decorations)
+            if (d.style.before?.label != None || d.style.after?.label != None) {
+                hasInlays = true;
+                break
+            }
         val old = update
         update = decorationUpdate(decorations)
         index(decorations.toArray())
@@ -159,6 +170,12 @@ public class CodeDecorations internal constructor(private val store: DecorationS
 
 internal class DecorationStore(val doc: CodeDocument, val changed: (DecorationUpdate) -> Unit) {
     private val collections = ArrayList<CodeDecorations>()
+    internal val hasInlays: Boolean
+        get() {
+            for (group in collections)
+                if (group.hasInlays) return true
+            return false
+        }
     internal fun create(): CodeDecorations {
         val group = CodeDecorations(this);
         collections.add(group);

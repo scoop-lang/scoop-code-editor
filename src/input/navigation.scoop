@@ -31,11 +31,11 @@ private fun EditorInk.moveInLayout(
         TextMovement.WordForward ||
         move ==
         TextMovement.WordRight
+    if (move == TextMovement.Backward || move == TextMovement.Forward)
+        return editor.stepGrapheme(cursor, move == TextMovement.Forward)
     when (move) {
         case DocumentStart -> return TextPosition(0L)
         case DocumentEnd -> return TextPosition(doc.byteLength)
-        case Backward -> return TextPosition(adjacentGrapheme(doc, cursor.byteOffset, false))
-        case Forward -> return TextPosition(adjacentGrapheme(doc, cursor.byteOffset, true))
         case ParagraphStart -> return TextPosition(doc.lineRange(logical.line).start)
         case ParagraphEnd -> return TextPosition(doc.lineRange(logical.line).end)
         else -> {}
@@ -109,7 +109,19 @@ private fun EditorInk.moveInLayout(
                         )
                 )
             }
-            if (next != None && next!!.position != pos) {
+            if ((move == TextMovement.Left || move == TextMovement.Right) &&
+                (row.ink.projection.hints.size > 0L || row.ink.projection.hasTabs)
+            ) {
+                var step = next
+                var last = pos
+                while (step != None && step!!.position != last) {
+                    val to = step!!.position
+                    val result = row.moved(pos, to)
+                    if (result != cursor) return@withLine result
+                    last = to
+                    step = layout.moveCaret(last, action, preferred)
+                }
+            } else if (next != None && next!!.position != pos) {
                 val result = row.source(next!!.position)
                 if (result.byteOffset != cursor.byteOffset || row.ink.suffix.byteLength == 0L)
                     return@withLine result

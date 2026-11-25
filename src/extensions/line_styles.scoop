@@ -129,17 +129,42 @@ private fun styledRun(text: String, layers: Array<RunLayer>): TextSpan {
 internal fun styledLine(
     projection: LineProjection,
     base: TextStyle,
-    runs: Array<EditorStyleRun>
+    runs: Array<EditorStyleRun>,
+    hintColor: Color
 ): StyledText = styledText {
     style = base
-    var at = 0L
-    for (run in runs) {
-        val a = projection.displayOffset(run.start)
-        val b = projection.displayOffset(run.end)
-        if (at < a) text(projection.text.utf8Slice(Utf8Range(at, a)))
-        add(styledRun(projection.text.utf8Slice(Utf8Range(a, b)), run.layers))
-        at = b
+    val spans = ArrayList<EditorStyleRun>()
+    for (run in runs)
+        projection
+            .sourceSpans(run.start, run.end) { a, b -> spans.add(EditorStyleRun(a, b, run.layers)) }
+    for (hint in projection.hints) {
+        val font = hint.hint.text.font
+        val fallback = when (font) {
+            case Some(val f) -> if (f.color == None) Some(hintColor) else None;
+            case None -> Some(hintColor)
+        }
+        spans
+            .add(
+                EditorStyleRun(
+                    hint.start,
+                    hint.end,
+                    [
+                        RunLayer(
+                            font,
+                            fallback
+                        )
+                    ]
+                )
+            )
     }
-    if (at < projection.text.byteLength || runs.size == 0L)
+    if (projection.hints.size > 0L && spans.size > 1L)
+        spans.sortWith(comparatorOf<EditorStyleRun> { a, b -> a.start.compareTo(b.start) })
+    var at = 0L
+    for (span in spans) {
+        if (at < span.start) text(projection.text.utf8Slice(Utf8Range(at, span.start)))
+        add(styledRun(projection.text.utf8Slice(Utf8Range(span.start, span.end)), span.layers))
+        at = span.end
+    }
+    if (at < projection.text.byteLength || spans.size == 0L)
         text(projection.text.utf8Slice(Utf8Range(at, projection.text.byteLength)))
 }

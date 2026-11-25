@@ -16,14 +16,16 @@ private class LensWindowTests {
     @Test(useProcess = true)
     fun firstLineLensReceivesMouseAndKeyboardAndOffscreenLensResolvesOnReveal() {
         withEditorProbe("scoop_editor_appkit_navigation") { key ->
-            withEditorMouse { mouse ->
-                val probe = LensWindow(mouse, key)
-                UiHost(
-                    onRootError = { _, e -> throw e },
-                    handler = { host, app, event -> probe.event(host, app, event) }
-                )
-                    .use { host -> Application().run(host) }
-                assertTrue(probe.finished)
+            withEditorProbe("scoop_editor_appkit_measure") { native ->
+                withEditorMouse { mouse ->
+                    val probe = LensWindow(mouse, key, native)
+                    UiHost(
+                        onRootError = { _, e -> throw e },
+                        handler = { host, app, event -> probe.event(host, app, event) }
+                    )
+                        .use { host -> Application().run(host) }
+                    assertTrue(probe.finished)
+                }
             }
         }
     }
@@ -31,13 +33,15 @@ private class LensWindowTests {
 
 private class LensWindow(
     val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>,
-    val key: FunPtr<(Ptr<Unit>?, Int) -> Int>
+    val key: FunPtr<(Ptr<Unit>?, Int) -> Int>,
+    val inputProbe: FunPtr<(Ptr<Unit>?, Int) -> Int>
 ) {
-    private val source = "fun hello()\n" + "  call()\n".repeat(75L)
+    private val source = "fun hello(中, otherArgument)\n" + "  call()\n".repeat(75L)
     private val doc = CodeDocument(source)
     val editor = CodeEditorState(doc)
     private val set = editor.codeLenses()
     private var window: Window? = None
+    private var hintClicks = 0
     private var calls = 0
     private var resolves = 0
     private var stage = 0
@@ -45,6 +49,20 @@ private class LensWindow(
     private val end = MonotonicTimeSource.now() + Duration.seconds(18L)
     var finished = false
     init {
+        editor.options = CodeEditorOptions(softWrap = true)
+        val font = spanStyle {
+            fontSize = Some(19.0);
+            slant = Some(FontSlant.Italic)
+        }
+        val hint = CodeInlayText(
+            "value: ",
+            Some(font),
+            Some { _, pos ->
+                assertEquals(10L, pos)
+                hintClicks += 1
+            }
+        )
+        editor.inlayHints().set(0L, [CodeInlayHint(10L, CodeInlaySide.Before, hint)])
         val first = CodeLensContent.Ready(CodeLensAction("Run") { _ -> calls += 1 })
         val second = CodeLensContent.Ready(CodeLensAction("Tests") { _ -> calls += 10 })
         val far = CodeLensContent
@@ -85,6 +103,19 @@ private class LensWindow(
             }
         }
     }
+    private fun native(step: Int): Int {
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                return when (lease.handle) {
+                    case AppKit(_, val v) -> inputProbe(Some(v), step)
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+
     fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
         when (event) {
             case Resumed -> {
@@ -174,10 +205,109 @@ private class LensWindow(
                                 if (!editor.hasFocus) return@post
                                 assertEquals(0, resolves)
                                 assertEquals(source, doc.read(Utf8Range(0L, doc.byteLength)))
-                                editor.revealRange(doc.lineRange(60L), true)
+                                val font = spanStyle {
+                                    fontSize = Some(40.0);
+                                    families = Some(["Times New Roman", "serif"])
+                                }
+                                editor
+                                    .decorations()
+                                    .set(
+                                        [
+                                            CodeDecoration(
+                                                Utf8Range(10L, 13L),
+                                                CodeDecorationStyle(font = Some(font))
+                                            )
+                                        ]
+                                    )
+                                window!!.requestSize(LogicalSize(236.0, 210.0))
                             }
 
                             case 5 -> {
+                                if (frame.size.width > 270.0) return@post
+                                val row = frame.rows[0L]
+                                assertTrue(row.ink.layout.lines.size > 1L)
+                                val hint = row.ink.projection.hints[0L]
+                                val r = row
+                                    .ink
+                                    .layout
+                                    .selection(TextRange(hint.start, hint.end))[0L]
+                                    .rect
+                                val location = point(
+                                    frame.gutter + r.x + r.width / 2.0,
+                                    row.top - frame.origin.y + r.y + r.height / 2.0
+                                )
+                                when (val target = editor.hitTest(location)!!) {
+                                    case Inlay(val offset, _, val label) -> {
+                                        assertEquals(10L, offset);
+                                        assertEquals("value: ", label.label)
+                                    }
+
+                                    else -> fail(Some("inlay missed after wrap"))
+                                }
+                                send(0, location)
+                            }
+
+                            case 6 -> {
+                                if (hintClicks != 1) return@post
+                                val before = TextPosition(10L, TextAffinity.Upstream)
+                                val after = TextPosition(10L, TextAffinity.Downstream)
+                                val l = editor.caretRect(before)!!
+                                val r = editor.caretRect(after)!!
+                                assertTrue(l.x != r.x || l.y != r.y)
+                                editor.setSelections([CodeSelection(before, before)])
+                                assertTrue(editor.runAction("cursor.right"))
+                                assertEquals(after, editor.selections.primary.cursor)
+                                assertTrue(editor.runAction("cursor.left"))
+                                val restored = editor.selections.primary.cursor
+                                assertEquals(
+                                    before,
+                                    restored,
+                                    Some(
+                                        f"left from right edge landed at ${restored.byteOffset} ${
+                                            restored.affinity == TextAffinity.Upstream
+                                        }, edges (${l.x},${l.y}) and (${r.x},${r.y})"
+                                    )
+                                )
+                                val line = doc.lineRange(0L)
+                                editor.setSelections([CodeSelection.offsets(line.start, line.end)])
+                                assertEquals(doc.read(line), editor.copyContent().text)
+                                editor.setSelections([CodeSelection(after, after)])
+                            }
+
+                            case 7 -> {
+                                val expected = editor.caretRect(TextPosition(10L))!!
+                                if (ink.area.visibleCaretBounds != Some(expected)) return@post
+                                assertEquals(
+                                    doc.read(doc.lineRange(0L)),
+                                    ink.input.state.surroundingText
+                                )
+                                assertEquals(doc.byteLength, native(3).toLong())
+                                assertEquals(0, native(1))
+                            }
+
+                            case 8 -> {
+                                if (!ink.input.composing) return@post
+                                val rect = ink.clippedCaret(frame, ink.activePosition(frame))!!
+                                assertEquals(
+                                    ink.area.toWindow(rect)!!,
+                                    ink.area.visibleCaretBounds!!
+                                )
+                                assertEquals(1, native(5))
+                                assertEquals(0, native(2))
+                            }
+
+                            case 9 -> {
+                                if (ink.input.composing || doc.version == 0L) return@post
+                                assertEquals(
+                                    "fun hello(中中, otherArgument)",
+                                    doc.read(doc.lineRange(0L))
+                                )
+                                assertEquals(CodeEditResult.Applied, editor.undo())
+                                assertEquals(source, doc.read(Utf8Range(0L, doc.byteLength)))
+                                editor.revealRange(doc.lineRange(60L), true)
+                            }
+
+                            case 10 -> {
                                 if (resolves == 0) return@post
                                 assertEquals(1, resolves)
                                 assertEquals("3 references", set.entries[2L].action.value!!.title)
@@ -185,18 +315,18 @@ private class LensWindow(
                                 assertTrue(editor.runAction("lens.focus"))
                             }
 
-                            case 6 -> {
+                            case 11 -> {
                                 if (!set.entries[2L].focus.isFocusActive) return@post
                                 send(2)
                             }
 
-                            case 7 -> {
+                            case 12 -> {
                                 if (calls != 102) return@post
-                                assertEquals(0L, doc.version)
+                                assertEquals(2L, doc.version)
                                 set.close()
                             }
 
-                            case 8 -> {
+                            case 13 -> {
                                 assertEquals(0L, frame.placedWidgets.size)
                                 finished = true
                                 active.requestExit()

@@ -51,24 +51,30 @@ internal class CodeLayout(val ink: EditorInk) {
         tab: Long,
         used: ArrayList<ShapedLine>,
         runs: Array<EditorStyleRun> = [],
-        suffix: String = ""
+        suffix: String = "",
+        hints: Array<LineInlay> = []
     ): ShapedLine {
         val fonts = ink.scope.defaultFonts
+        val hintColor = if (hints.size > 0L) Some(ink.editor.options.gutter) else None
         for (line in used) {
-            if (line.matches(source, style, wrap, tab, fonts.revision, runs, suffix))
+            if (line
+                .matches(source, style, wrap, tab, fonts.revision, runs, suffix, hints, hintColor)
+            )
                 return line.retain()
         }
         for (line in cache) {
-            if (line.matches(source, style, wrap, tab, fonts.revision, runs, suffix)) {
+            if (line
+                .matches(source, style, wrap, tab, fonts.revision, runs, suffix, hints, hintColor)
+            ) {
                 used.add(line.retain())
                 return line.retain()
             }
         }
-        val projection = LineProjection.from(source, tab, suffix)
-        val paragraph = if (runs.size == 0L)
+        val projection = LineProjection.from(source, tab, suffix, hints)
+        val paragraph = if (runs.size == 0L && hints.size == 0L)
             Paragraph(fonts, projection.text, style)
         else
-            Paragraph(fonts, styledLine(projection, style, runs))
+            Paragraph(fonts, styledLine(projection, style, runs, ink.editor.options.gutter))
         val layout = paragraph
             .use { paragraph ->
                 if (wrap < 0.0) paragraph.layoutUnwrapped() else paragraph.layout(wrap)
@@ -82,10 +88,31 @@ internal class CodeLayout(val ink: EditorInk) {
             tab,
             fonts.revision,
             runs,
-            suffix
+            suffix, hints, hintColor
         )
         used.add(line.retain())
         return line
+    }
+
+    private fun shapeSource(
+        doc: CodeSnapshot,
+        r: Utf8Range,
+        line: Long,
+        opt: CodeEditorOptions,
+        wrap: Double,
+        used: ArrayList<ShapedLine>
+    ): ShapedLine {
+        val styles = ink.decorationsFor(r)
+        return shape(
+            doc.read(r),
+            opt.text,
+            wrap,
+            opt.tabSize,
+            used,
+            textStyleRuns(r, styles),
+            suffix(line),
+            lineInlays(r, styles)
+        )
     }
 
     private fun suffix(line: Long): String = if (projection.endOfFold(line) != None) "  …" else ""
@@ -97,10 +124,7 @@ internal class CodeLayout(val ink: EditorInk) {
             positive(frame.size.width - frame.gutter - 4.0)
         else
             -1.0
-        val body = shape(
-            frame.document.read(r), frame.options.text, wrap, frame.options.tabSize, used,
-            textStyleRuns(r, ink.decorationsFor(r)), suffix(line)
-        )
+        val body = shapeSource(frame.document, r, line, frame.options, wrap, used)
         try {
             return run(ScreenRow(line, r, body, None, 0.0, body.layout.size.height))
         } finally {
@@ -248,14 +272,7 @@ internal class CodeLayout(val ink: EditorInk) {
                 val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
                 anchorLine = folds.line(folds.index(doc.positionAt(offset).line))
                 val r = doc.lineRange(anchorLine)
-                val body = shape(
-                    doc.read(r),
-                    opt.text,
-                    wrap,
-                    opt.tabSize,
-                    used,
-                    textStyleRuns(r, ink.decorationsFor(r)), suffix(anchorLine)
-                )
+                val body = shapeSource(doc, r, anchorLine, opt, wrap, used)
                 try {
                     val local = if (offset > r.end) r.end - r.start else offset - r.start
                     withinAnchor = (body.layout.caret(body.display(local, a.affinity))?.y ?: 0.0) -
@@ -273,14 +290,7 @@ internal class CodeLayout(val ink: EditorInk) {
             when (target) {
                 case Some(val line) -> {
                     val r = doc.lineRange(line)
-                    val body = shape(
-                        doc.read(r),
-                        opt.text,
-                        wrap,
-                        opt.tabSize,
-                        used,
-                        textStyleRuns(r, ink.decorationsFor(r)), suffix(line)
-                    )
+                    val body = shapeSource(doc, r, line, opt, wrap, used)
                     try {
                         val h = positive(body.layout.size.height)
                         index.record(folds.index(line), h + (widgets.zones[line] ?: 0.0))
@@ -329,14 +339,7 @@ internal class CodeLayout(val ink: EditorInk) {
             ) {
                 val line = folds.line(visual)
                 val r = doc.lineRange(line)
-                val body = shape(
-                    doc.read(r),
-                    opt.text,
-                    wrap,
-                    opt.tabSize,
-                    used,
-                    textStyleRuns(r, ink.decorationsFor(r)), suffix(line)
-                )
+                val body = shapeSource(doc, r, line, opt, wrap, used)
                 val label = if (opt.lineNumbers)
                     Some(shape((line + 1L).toString(), gutterStyle, -1.0, 1L, used))
                 else

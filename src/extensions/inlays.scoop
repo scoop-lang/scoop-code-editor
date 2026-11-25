@@ -1,0 +1,135 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.graphics.text.*
+import scoop.text.indexOf
+import scoop.window.Utf8Range
+
+public enum CodeInlaySide {
+    Before, After
+}
+
+public class CodeInlayText public constructor(
+    public val label: String,
+    public val font: SpanStyle? = None,
+    public val onClick: ((CodeEditorState, Long) -> Unit)? = None
+) {
+    init {
+        if (label.byteLength == 0L || label.indexOf("\n") >= 0L || label.indexOf("\r") >= 0L)
+            throw IllegalArgumentException(Some("inlay must contain nonempty single-line text"))
+    }
+}
+
+public struct CodeInlayHint(val offset: Long, val side: CodeInlaySide, val text: CodeInlayText)
+
+public class CodeInlayHints internal constructor(
+    private val doc: CodeDocument,
+    private val group: CodeDecorations
+) : Closeable {
+    public fun set(version: Long, hints: List<CodeInlayHint>): Boolean {
+        if (version != doc.version) return false
+        val values = ArrayList<CodeDecoration>()
+        for (hint in hints) {
+            if (!scalarBoundary(doc.root, hint.offset) ||
+                doc.offsetAt(doc.positionAt(hint.offset)) !=
+                hint.offset
+            )
+                throw IllegalArgumentException(
+                    Some("inlay position is outside a line or splits UTF-8")
+                )
+            val before = hint.side == CodeInlaySide.Before
+            val bias = if (before) CodeStickiness.After else CodeStickiness.Before
+            val style = if (before)
+                CodeDecorationStyle(before = Some(hint.text))
+            else
+                CodeDecorationStyle(after = Some(hint.text))
+            values.add(CodeDecoration(Utf8Range(hint.offset, hint.offset), style, bias, bias))
+        }
+        group.set(values)
+        return true
+    }
+    public override fun close() {
+        group.close()
+    }
+}
+
+public fun CodeEditorState.inlayHints(): CodeInlayHints = CodeInlayHints(document, decorations())
+
+public fun CodeDocument.inlayHints(): CodeInlayHints = CodeInlayHints(this, decorations())
+
+internal struct LineInlay(val offset: Long, val side: CodeInlaySide, val text: CodeInlayText)
+
+internal fun lineInlays(line: Utf8Range, values: Array<CodeDecoration>): Array<LineInlay> {
+    val result = ArrayList<LineInlay>()
+    for (d in values) {
+        if (d.range.start >= line.start && d.range.start <= line.end)
+            when (val text = d.style.before) {
+                case Some(val t) ->
+                    result.add(LineInlay(d.range.start - line.start, CodeInlaySide.Before, t))
+                case None -> {}
+            }
+        if (d.range.end >= line.start && d.range.end <= line.end)
+            when (val text = d.style.after) {
+                case Some(val t) ->
+                    result.add(LineInlay(d.range.end - line.start, CodeInlaySide.After, t))
+                case None -> {}
+            }
+    }
+    if (result.size > 1L)
+        result
+            .sortWith(
+                comparatorOf<LineInlay> { a, b ->
+                    if (a.offset != b.offset)
+                        a.offset.compareTo(b.offset)
+                    else if (a.side == b.side) 0 else if (a.side == CodeInlaySide.Before) -1 else 1
+                }
+            )
+    return result.toArray()
+}
+
+internal fun sameInlays(a: Array<LineInlay>, b: Array<LineInlay>): Boolean {
+    if (a.size != b.size) return false
+    for (i in 0L..<a.size)
+        if (a[i].offset != b[i].offset || a[i].side != b[i].side || a[i].text !== b[i].text)
+            return false
+    return true
+}
+
+internal struct DisplayInlay(val hint: LineInlay, val base: Long, val start: Long, val end: Long)
+
+private fun CodeEditorState.hasInlayAt(offset: Long): Boolean {
+    val point = Utf8Range(offset, offset)
+    val values = ArrayList<CodeDecoration>()
+    if (document.decorationStore.hasInlays) document.decorationStore.collect(point, values)
+    if (decorationStore.hasInlays) decorationStore.collect(point, values)
+    for (d in values)
+        if (d.range.start ==
+            offset &&
+            d.style.before?.label !=
+            None ||
+            d.range.end ==
+            offset &&
+            d.style.after?.label !=
+            None
+        )
+            return true
+    return false
+}
+
+internal fun CodeEditorState.stepGrapheme(cursor: TextPosition, forward: Boolean): TextPosition {
+    val hints = decorationStore.hasInlays || document.decorationStore.hasInlays
+    val at = cursor.byteOffset
+    val near = if (forward) TextAffinity.Upstream else TextAffinity.Downstream
+    if (hints && cursor.affinity == near && hasInlayAt(at))
+        return TextPosition(at, if (forward) TextAffinity.Downstream else TextAffinity.Upstream)
+    val next = adjacentGrapheme(document, at, forward)
+    if (next == at) return cursor
+    return TextPosition(
+        next,
+        if (forward && next != at && hints && hasInlayAt(next))
+            TextAffinity.Upstream
+        else
+            TextAffinity.Downstream
+    )
+}
