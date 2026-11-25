@@ -1,0 +1,166 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Test
+private class FoldWindowTests {
+    @Ignore("Run validation/appkit.sh on macOS")
+    @Test(useProcess = true)
+    fun nativeFoldControlsSkipHiddenRowsAndOtherViewKeepsEditingThem() {
+        withEditorMouse { mouse ->
+            val run = FoldWindow(mouse)
+            UiHost(
+                onRootError = { _, error -> throw error },
+                handler = { host, app, event -> run.event(host, app, event) }
+            )
+                .use { host -> Application().run(host) }
+            assertTrue(run.finished)
+        }
+    }
+}
+
+private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>) {
+    val doc = CodeDocument("outer\n  nested\n    body\n  peer\nafter\nend")
+    val left = CodeEditorState(doc)
+    val right = CodeEditorState(doc)
+    private var window: Window? = None
+    private var stage = 0
+    private var queued = false
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(15L)
+    var finished = false
+    private fun click(x: Double, y: Double) {
+        val r = left.mounted!!.area.toWindow(Rect(x, y, 1.0, 1.0))!!
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                when (lease.handle) {
+                    case AppKit(_, val view) -> {
+                        mouse(view, 0, r.x, r.y, 1, 0)
+                        mouse(view, 2, r.x, r.y, 1, 0)
+                    }
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Folded editor views";
+                            size = LogicalSize(720.0, 280.0)
+                        }
+                    )
+                window = Some(w)
+                host.attach(w, { scope -> FoldViews(this, scope) })
+                w.requestFocus()
+                app.setControlFlow(ControlFlow.WaitUntil(deadline))
+            }
+
+            case NewEvents(StartCause.Deadline) ->
+                fail(Some(f"fold window stopped at stage ${stage}"))
+
+            case AboutToWait -> {
+                val leftInk = left.mounted ?: return
+                val rightInk = right.mounted ?: return
+                val frame = leftInk.currentFrame() ?: return
+                val peer = rightInk.currentFrame() ?: return
+                if (queued || finished || window?.isFocused != Some(true)) return
+                queued = true
+                app
+                    .proxy()
+                    .post { active ->
+                        queued = false
+                        when (stage) {
+                            case 0 -> {
+                                val head = frame.rowAt(TextPosition(0L))!!
+                                assertTrue(head.foldHeader)
+                                click(8.0, head.top - frame.origin.y + head.height / 2.0)
+                            }
+
+                            case 1 -> {
+                                if (!frame.folds.hidden(2L)) return@post
+                                assertFalse(peer.folds.hidden(2L))
+                                assertEquals(2L, left.visibleRanges().size)
+                                assertTrue(
+                                    left.caretRect(TextPosition(doc.lineRange(2L).start)) == None
+                                )
+                                assertTrue(
+                                    right.caretRect(TextPosition(doc.lineRange(2L).start)) != None
+                                )
+                                left.setSelections([CodeSelection.caret(0L)])
+                                assertTrue(left.runAction("cursor.down"))
+                                assertEquals(
+                                    4L,
+                                    doc.positionAt(left.selections.primary.cursor.byteOffset).line
+                                )
+                                right.setSelections([CodeSelection.caret(doc.lineRange(2L).start)])
+                                right.typeText("    inserted\n")
+                            }
+
+                            case 2 -> {
+                                assertTrue(frame.folds.hidden(4L))
+                                assertEquals(5L, frame.folds.line(1L))
+                                assertFalse(peer.folds.hidden(4L))
+                                val head = frame.rows[0L]
+                                val p = head.ink.projection
+                                val box = head
+                                    .ink
+                                    .layout
+                                    .selection(TextRange(p.sourceEnd, p.text.byteLength))[0L]
+                                    .rect
+                                click(
+                                    frame.gutter + box.x + box.width / 2.0 - frame.origin.x,
+                                    head.top + box.y + box.height / 2.0 - frame.origin.y
+                                )
+                            }
+
+                            case 3 -> {
+                                if (frame.folds.hidden(3L)) return@post
+                                assertTrue(left.folding.fold(0L, true))
+                                val find = CodeFind(left, "body")
+                                assertTrue(find.next())
+                                assertEquals("body", left.selectedText())
+                                find.close()
+                            }
+
+                            case 4 -> {
+                                assertEquals(0L, left.folding.collapsedRanges().size)
+                                assertTrue(left.caretRect(left.selections.primary.cursor) != None)
+                                assertEquals(0L, right.folding.collapsedRanges().size)
+                                finished = true
+                                active.requestExit()
+                            }
+
+                            else -> {}
+                        }
+                        stage += 1
+                    }
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class FoldViews(val probe: FoldWindow, scope: ComponentScope) : Component(scope) {
+    public override fun render(): View {
+        val p = probe
+        return row {
+            alignment = CrossAlignment.Stretch
+            item(codeEditor(p.left)) { grow = 1.0 }
+            item(codeEditor(p.right)) { grow = 1.0 }
+        }
+    }
+}

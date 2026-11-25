@@ -37,7 +37,8 @@ internal fun EditorInk.selectColumn(c: EditorColumn, frame: EditorFrame) {
     val last = if (aLine <= bLine) bLine else aLine
     val values = ArrayList<CodeSelection>()
     var primary = 0L
-    for (line in first..<last + 1L) {
+    for (visual in frame.folds.index(first)..<frame.folds.index(last) + 1L) {
+        val line = frame.folds.line(visual)
         val startIndex = values.size
         val active = withLine(line, frame) { row ->
             val rows = row.ink.layout.lines

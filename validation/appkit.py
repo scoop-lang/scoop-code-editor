@@ -56,12 +56,18 @@ def run_case(bundle, probe, directory, index, case, shape=None):
     ]
     if shape:
         command.extend(["--env", f"SCOOP_EDITOR_BENCH_SHAPE={shape}"])
-    subprocess.run([*command, "--args", "--scoop-test-child", str(index)], check=True)
+    # LaunchServices can lose the wait registration for a case that exits immediately.
+    launch = subprocess.run(
+        [*command, "--args", "--scoop-test-child", str(index)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     result = record.read_text()
     print(output.read_text(), end="")
     print(error.read_text(), end="", file=sys.stderr)
     if not result.startswith(f"{index} passed "):
-        raise SystemExit(f"{case['name']} failed\n{result}")
+        raise SystemExit(f"{case['name']} failed\n{result}{launch.stderr}")
     print(f"{case['name']} passed", flush=True)
 
 

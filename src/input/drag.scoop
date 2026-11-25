@@ -56,6 +56,12 @@ internal fun EditorInk.beginDrag(point: Point, count: Long, mods: Modifiers) {
     val frame = currentFrame() ?: return
     val hit = frame.hit(point) ?: return
     area.requestFocus(FocusOrigin.Pointer)
+    val toggle = frame.foldTarget(point)
+    if (toggle != None) {
+        val source = frame.original(TextPosition(frame.document.lineRange(toggle!!).start))
+        editor.folding.toggle(editor.document.positionAt(source.byteOffset).line)
+        return
+    }
     preferredX = []
     val old = editor.selections
     val unit = if (mods.alt && mods.shift)

@@ -66,6 +66,17 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                         case None -> {}
                     }
                 }
+                if (row.foldHeader) {
+                    val y = row.top - frame.origin.y + (row.ink.layout.lines[0L].rect.height / 2.0)
+                    val mark = Paint(color = opt.gutter)
+                    if (frame.folds.endOfFold(row.line) != None) {
+                        canvas.drawLine(Point(6.0, y - 3.5), Point(10.0, y), mark)
+                        canvas.drawLine(Point(10.0, y), Point(6.0, y + 3.5), mark)
+                    } else {
+                        canvas.drawLine(Point(4.5, y - 2.0), Point(8.0, y + 2.0), mark)
+                        canvas.drawLine(Point(8.0, y + 2.0), Point(11.5, y - 2.0), mark)
+                    }
+                }
                 when (row.label) {
                     case Some(val label) ->
                         canvas

@@ -16,7 +16,8 @@ internal class WidgetLayout(
     val context: MeasureContext,
     val size: Size,
     val gutter: Double,
-    val doc: CodeSnapshot
+    val doc: CodeSnapshot,
+    val folds: FoldProjection
 ) {
     internal val zones = HashMap<Long, Double>()
     private val heights = HashMap<Long, Double>()
@@ -31,6 +32,7 @@ internal class WidgetLayout(
                 case Zone -> {
                     val offset = ink.input.previewMap?.map(w.offset) ?: w.offset
                     val line = doc.positionAt(offset).line
+                    if (folds.hidden(line)) continue
                     val measured = context
                         .measureChild(i, Constraints(minWidth = body, maxWidth = Some(body)))
                     heights.put(i, measured.size.height)
@@ -49,11 +51,19 @@ internal class WidgetLayout(
             val widget = items[i]
             when (widget.kind) {
                 case Zone -> {
-                    val line = lines[i]!!
-                    val above = placed[line] ?: 0.0
-                    val y = index.prefix(line + 1L) - (zones[line] ?: 0.0) + above - frame.origin.y
+                    val line = lines[i]
+                    if (line == None) {
+                        context.skipChild(i);
+                        continue
+                    }
+                    val logical = line!!
+                    val above = placed[logical] ?: 0.0
+                    val y = index.prefix(folds.index(logical) + 1L) -
+                        (zones[logical] ?: 0.0) +
+                        above -
+                        frame.origin.y
                     context.placeChild(i, Point(gutter, y))
-                    placed.put(line, above + (heights[i] ?: 0.0))
+                    placed.put(logical, above + (heights[i] ?: 0.0))
                 }
 
                 case Content -> {

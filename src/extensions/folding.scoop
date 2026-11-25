@@ -1,0 +1,312 @@
+package scoop.ui.editor
+
+import scoop.collections.HashMap
+import scoop.graphics.text.TextPosition
+
+public class CodeFolding internal constructor(private val editor: CodeEditorState) {
+    private val doc: CodeDocument get() = editor.document
+    private val manual = ArrayList<FoldAnchor>()
+    private val closedRanges = ArrayList<FoldAnchor>()
+    private var cache: FoldProjection? = None
+    private var indentVersion = -1L
+    private var tabSize = -1L
+    private var automatic: Array<CodeFoldRange> = []
+    internal var revision = 0L
+
+    public fun collapsedRanges(): Array<CodeFoldRange> = sortedFolds(
+        Array<CodeFoldRange>(closedRanges.size) { i -> closedRanges[i].lines(doc) }
+    )
+    public fun manualRanges(): Array<CodeFoldRange> = sortedFolds(
+        Array<CodeFoldRange>(manual.size) { i -> manual[i].lines(doc) }
+    )
+
+    private fun invalidate() {
+        revision += 1L
+        cache = None
+        when (val ink = editor.mounted) {
+            case Some(val view) -> if (!view.ended) view.scope.requestLayout();
+            case None -> {}
+        }
+    }
+    internal fun candidatesChanged() {
+        if (closedRanges.size > 0L) {
+            val bounds = HashMap<Long, Long>()
+            for (r in candidates())
+                bounds.put(r.first, r.last)
+            var i = closedRanges.size
+            while (i > 0L) {
+                i -= 1L
+                val f = closedRanges[i]
+                val last = bounds[doc.positionAt(f.header).line]
+                if (last == None) closedRanges.removeAt(i) else f.end = doc.lineRange(last!!).end
+            }
+        }
+        invalidate()
+    }
+    internal fun changed(map: CodeEditMap) {
+        mapFoldAnchors(manual, doc, map)
+        mapFoldAnchors(closedRanges, doc, map)
+        indentVersion = -1L
+        cache = None
+        revision += 1L
+    }
+
+    internal fun projection(
+        preview: CodeSnapshot? = None,
+        map: CodeEditMap? = None
+    ): FoldProjection {
+        if (preview?.version != None && map?.changes?.size != None) {
+            val ranges = Array<CodeFoldRange>(closedRanges.size) { i ->
+                val f = closedRanges[i]
+                CodeFoldRange(
+                    preview!!.positionAt(map!!.map(f.header)).line,
+                    preview!!.positionAt(map!!.map(f.end, CodeStickiness.Before)).line
+                )
+            }
+            return FoldProjection(preview!!.lineCount, ranges)
+        }
+        val before = cache
+        when (before) {
+            case Some(val existing) -> return existing;
+            case None -> {}
+        }
+        val next = FoldProjection(doc.lineCount, collapsedRanges())
+        cache = Some(next)
+        return next
+    }
+
+    internal fun visibleDestination(
+        from: TextPosition,
+        next: TextPosition,
+        folds: FoldProjection = projection()
+    ): TextPosition {
+        val line = doc.positionAt(next.byteOffset).line
+        if (!folds.hidden(line)) return next
+        val i = folds.index(line)
+        if (next.byteOffset > from.byteOffset && i + 1L < folds.count)
+            return TextPosition(doc.lineRange(folds.line(i + 1L)).start)
+        return TextPosition(doc.lineRange(folds.line(i)).end)
+    }
+
+    internal fun header(line: Long): Boolean {
+        if (projection().endOfFold(line) != None) return true
+        for (f in manual)
+            if (doc.positionAt(f.header).line == line) return true
+        if (doc.providedFolds.size > 0L) {
+            val row = doc.lineRange(line, true)
+            var lo = 0L
+            var hi = doc.providedFolds.size
+            while (lo < hi) {
+                val mid = (lo + hi) / 2L
+                if (doc.providedFolds[mid].header < row.start) lo = mid + 1L else hi = mid
+            }
+            return lo <
+                doc.providedFolds.size &&
+                doc.positionAt(doc.providedFolds[lo].header).line ==
+                line
+        }
+        return doc.indentHeader(line, editor.options.tabSize)
+    }
+
+    private fun candidates(): Array<CodeFoldRange> {
+        val byHeader = HashMap<Long, CodeFoldRange>()
+        if (doc.providedFolds.size > 0L) {
+            for (f in doc.providedFolds) {
+                val r = f.lines(doc);
+                byHeader[r.first] = r
+            }
+        } else {
+            if (indentVersion != doc.version || tabSize != editor.options.tabSize) {
+                automatic = doc.indentedFoldRanges(editor.options.tabSize)
+                indentVersion = doc.version
+                tabSize = editor.options.tabSize
+            }
+            for (r in automatic)
+                byHeader[r.first] = r
+        }
+        val manualLines = manualRanges()
+        if (manualLines.size > 0L) {
+            val removed = ArrayList<Long>()
+            for (entry in byHeader)
+                for (m in manualLines) {
+                    if (crossing(entry.value, m)) {
+                        removed.add(entry.key);
+                        break
+                    }
+                }
+            for (header in removed)
+                byHeader.remove(header)
+            for (m in manualLines)
+                byHeader.put(m.first, m)
+        }
+
+        val ranges = ArrayList<CodeFoldRange>()
+        for (entry in byHeader)
+            ranges.add(entry.value)
+        return sortedFolds(ranges)
+    }
+
+    private fun atOrInside(line: Long, ranges: List<CodeFoldRange>): CodeFoldRange? {
+        var result: CodeFoldRange? = None
+        for (r in ranges) {
+            if (r.first > line) break
+            if (r.last >= line) result = Some(r)
+        }
+        return result
+    }
+
+    private fun collapse(r: CodeFoldRange): Boolean {
+        for (f in closedRanges) {
+            val old = f.lines(doc)
+            if (old.first == r.first) {
+                if (old == r) return false
+                f.end = doc.lineRange(r.last).end
+                return true
+            }
+        }
+        closedRanges.add(doc.foldAnchor(r))
+        return true
+    }
+
+    private fun finishCollapse() {
+        invalidate()
+        val folded = projection()
+        val old = editor.selections
+        fun visible(pos: TextPosition): TextPosition {
+            val line = doc.positionAt(pos.byteOffset).line
+            if (!folded.hidden(line)) return pos
+            return TextPosition(doc.lineRange(folded.line(folded.index(line))).end)
+        }
+        editor
+            .setSelections(
+                Array<CodeSelection>(old.values.size) { i ->
+                    val s = old.values[i]
+                    CodeSelection(visible(s.anchor), visible(s.cursor))
+                },
+                old.primaryIndex
+            )
+    }
+
+    public fun fold(line: Long, recursive: Boolean = false): Boolean {
+        val ranges = candidates()
+        val root = atOrInside(line, ranges) ?: return false
+        var changed = collapse(root)
+        if (recursive)
+            for (r in ranges)
+                if (r.first > root.first && r.last <= root.last && collapse(r)) changed = true
+        if (changed) finishCollapse()
+        return changed
+    }
+    public fun unfold(line: Long, recursive: Boolean = false): Boolean {
+        val chosen = atOrInside(line, collapsedRanges()) ?: return false
+        var i = closedRanges.size
+        while (i > 0L) {
+            i -= 1L
+            val r = closedRanges[i].lines(doc)
+            if (r.first ==
+                chosen.first ||
+                recursive &&
+                r.first >=
+                chosen.first &&
+                r.last <=
+                chosen.last
+            )
+                closedRanges.removeAt(i)
+        }
+        invalidate()
+        return true
+    }
+    public fun toggle(line: Long): Boolean = if (projection().endOfFold(line) != None)
+        unfold(line)
+    else
+        fold(line)
+
+    public fun foldAll() {
+        var changed = false
+        val known = HashMap<Long, FoldAnchor>()
+        for (f in closedRanges)
+            known[doc.positionAt(f.header).line] = f
+        for (r in candidates()) {
+            val current = known[r.first]
+            if (current?.header == None) {
+                val f = doc.foldAnchor(r)
+                closedRanges.add(f)
+                known[r.first] = f
+                changed = true
+            } else if (current!!.lines(doc).last != r.last) {
+                current!!.end = doc.lineRange(r.last).end
+                changed = true
+            }
+        }
+        if (changed) finishCollapse()
+    }
+    public fun unfoldAll() {
+        if (closedRanges.size == 0L) return
+        closedRanges.clear()
+        invalidate()
+    }
+    private fun crossing(a: CodeFoldRange, b: CodeFoldRange): Boolean = (
+        a.first < b.first && b.first <= a.last && a.last < b.last
+    ) ||
+        (b.first < a.first && a.first <= b.last && b.last < a.last)
+
+    private fun removeCrossing(items: ArrayList<FoldAnchor>, range: CodeFoldRange) {
+        var i = items.size
+        while (i > 0L) {
+            i -= 1L;
+            if (crossing(items[i].lines(doc), range)) items.removeAt(i)
+        }
+    }
+    public fun addManual(r: CodeFoldRange, collapsed: Boolean = true) {
+        val f = doc.foldAnchor(r)
+        removeCrossing(manual, r)
+        removeCrossing(closedRanges, r)
+        var present = false
+        for (old in manual)
+            if (old.lines(doc).first == r.first) {
+                old.end = f.end;
+                present = true;
+                break
+            }
+        if (!present) manual.add(f)
+        if (collapsed && collapse(r)) finishCollapse() else invalidate()
+    }
+    public fun removeManual(line: Long): Boolean {
+        val r = atOrInside(line, manualRanges()) ?: return false
+        var i = manual.size
+        while (i > 0L) {
+            i -= 1L;
+            if (manual[i].lines(doc) == r) manual.removeAt(i)
+        }
+        i = closedRanges.size
+        while (i > 0L) {
+            i -= 1L;
+            if (closedRanges[i].lines(doc) == r) closedRanges.removeAt(i)
+        }
+        invalidate()
+        return true
+    }
+    internal fun reveal(line: Long) {
+        var i = closedRanges.size
+        var changed = false
+        while (i > 0L) {
+            i -= 1L
+            val r = closedRanges[i].lines(doc)
+            if (r.first < line && r.last >= line) {
+                closedRanges.removeAt(i);
+                changed = true
+            }
+        }
+        if (changed) invalidate()
+    }
+    internal fun restore(manuals: Array<CodeFoldRange>, collapsed: Array<CodeFoldRange>) {
+        manual.clear()
+        closedRanges.clear()
+        for (r in manuals)
+            if (r.first >= 0L && r.last < doc.lineCount && r.first < r.last)
+                manual.add(doc.foldAnchor(r))
+        for (r in collapsed)
+            if (r.first >= 0L && r.last < doc.lineCount && r.first < r.last) collapse(r)
+        invalidate()
+    }
+}

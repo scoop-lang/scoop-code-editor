@@ -1,0 +1,81 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class EditorFoldingTests {
+    @Test
+    fun nestedAndManualFoldsTrackChangesPerViewAndFindRevealsHiddenText() {
+        val doc = CodeDocument("outer\n  inner\n    value\n  peer\nend\n")
+        val left = CodeEditorState(doc)
+        val right = CodeEditorState(doc)
+        assertTrue(left.folding.fold(0L, true))
+        assertEquals(2L, left.folding.collapsedRanges().size)
+        assertEquals(0L, right.folding.collapsedRanges().size)
+        left.setSelections([CodeSelection.caret(doc.lineRange(0L).end)])
+        left.moveHorizontal(true)
+        assertEquals(doc.lineRange(4L).start, left.selections.primary.cursor.byteOffset)
+        left.moveHorizontal(false)
+        assertEquals(doc.lineRange(0L).end, left.selections.primary.cursor.byteOffset)
+        val hidden = left.folding.projection()
+        assertEquals(3L, hidden.count)
+        assertEquals(4L, hidden.line(1L))
+        assertTrue(hidden.hidden(2L))
+        val offset = doc.lineRange(2L).start
+        right.setSelections([CodeSelection.caret(offset)])
+        right.replaceSelections("    extra\n")
+        assertEquals(4L, left.folding.collapsedRanges()[0L].last)
+        assertEquals(5L, left.folding.projection().line(1L))
+        val find = CodeFind(left, "value")
+        assertTrue(find.next())
+        assertEquals("value", left.selectedText())
+        assertEquals(0L, left.folding.collapsedRanges().size)
+        left.folding.addManual(CodeFoldRange(2L, 4L))
+        val saved = left.saveViewState()
+        left.folding.unfoldAll()
+        left.restoreViewState(saved)
+        assertTrue(left.folding.projection().hidden(3L))
+        assertTrue(left.folding.removeManual(3L))
+        assertEquals(0L, left.folding.collapsedRanges().size)
+        find.close()
+    }
+
+    @Test
+    fun versionedRangesAndCollapsedProjectionKeepVisibleLinesReversible() {
+        val doc = CodeDocument("0\n1\n2\n3\n4\n5\n6\n7")
+        val e = CodeEditorState(doc)
+        assertFalse(doc.setFoldingRanges(1L, [CodeFoldRange(0L, 5L)]))
+        assertTrue(
+            doc
+                .setFoldingRanges(
+                    0L,
+                    [CodeFoldRange(0L, 4L), CodeFoldRange(1L, 3L), CodeFoldRange(5L, 6L)]
+                )
+        )
+        assertFailsWith<IllegalArgumentException> {
+            doc.setFoldingRanges(doc.version, [CodeFoldRange(0L, 4L), CodeFoldRange(2L, 6L)])
+        }
+        e.folding.foldAll()
+        val projected = e.folding.projection()
+        assertEquals(3L, projected.count)
+        assertEquals(0L, projected.line(0L))
+        assertEquals(5L, projected.line(1L))
+        assertEquals(7L, projected.line(2L))
+        for (i in 0L..<projected.count)
+            assertEquals(i, projected.index(projected.line(i)))
+        assertTrue(e.folding.unfold(0L))
+        assertTrue(e.folding.projection().hidden(2L))
+        assertFalse(e.folding.projection().hidden(4L))
+        assertTrue(e.folding.unfold(1L, true))
+        assertTrue(e.folding.projection().hidden(6L))
+        assertTrue(doc.setFoldingRanges(doc.version, [CodeFoldRange(0L, 3L)]))
+        assertFalse(e.folding.projection().hidden(6L))
+        e.folding.addManual(CodeFoldRange(0L, 4L))
+        e.folding.addManual(CodeFoldRange(3L, 6L))
+        assertEquals(1L, e.folding.manualRanges().size)
+        assertEquals(CodeFoldRange(3L, 6L), e.folding.manualRanges()[0L])
+        assertFalse(e.folding.projection().hidden(2L))
+        assertFalse(e.folding.projection().hidden(2L))
+    }
+}

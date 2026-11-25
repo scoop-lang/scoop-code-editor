@@ -13,7 +13,8 @@ internal class ShapedLine(
     val width: Double,
     val tabSize: Long,
     val fontsRevision: Long,
-    val runs: Array<ColorRun> = []
+    val runs: Array<ColorRun> = [],
+    val suffix: String = ""
 ) {
     private var owners = 1L
     internal fun display(
@@ -40,7 +41,8 @@ internal class ShapedLine(
         wrap: Double,
         tab: Long,
         fontRevision: Long,
-        colors: Array<ColorRun>
+        colors: Array<ColorRun>,
+        ending: String
     ): Boolean = source ==
         text &&
         style ===
@@ -51,6 +53,8 @@ internal class ShapedLine(
         tab &&
         fontsRevision ==
         fontRevision &&
+        suffix ==
+        ending &&
         sameRuns(runs, colors)
 
     internal fun retain(): ShapedLine {
@@ -69,7 +73,8 @@ internal class ScreenRow(
     val ink: ShapedLine,
     val label: ShapedLine?,
     val top: Double,
-    val height: Double
+    val height: Double,
+    val foldHeader: Boolean = false
 ) {
     internal fun display(position: TextPosition): TextPosition = ink
         .display(position.byteOffset - range.start, position.affinity)
@@ -91,7 +96,9 @@ internal class EditorFrame(
     val unprojected: CodeEditMap?,
     val decorationRevision: Long,
     val widgets: Array<EditorWidget>,
-    val scrollRevision: ULong
+    val scrollRevision: ULong,
+    val folds: FoldProjection,
+    val foldRevision: Long
 ) {
     private var owners = 1L
     internal val origin: Point get() = scroll.presentationOffset
@@ -156,9 +163,41 @@ internal class EditorFrame(
         return Some(ReadingAnchor(position.byteOffset, caret.y, request, position.affinity))
     }
 
+    internal fun foldTarget(point: Point): Long? {
+        val y = point.y + origin.y
+        for (row in rows) {
+            if (y < row.top || y >= row.top + row.height) continue
+            if (row.foldHeader && options.foldingControls && point.x >= 2.0 && point.x < 16.0)
+                return Some(row.line)
+            val p = row.ink.projection
+            if (p.sourceEnd < p.text.byteLength) {
+                val local = Point(point.x - gutter + origin.x, y - row.top)
+                for (box in row.ink.layout.selection(TextRange(p.sourceEnd, p.text.byteLength))) {
+                    val r = box.rect
+                    if (local.x >=
+                        r.x &&
+                        local.x <
+                        r.x +
+                        r.width &&
+                        local.y >=
+                        r.y &&
+                        local.y <
+                        r.y +
+                        r.height
+                    )
+                        return Some(row.line)
+                }
+            }
+            break
+        }
+        return None
+    }
+
     internal fun visible(): Array<Utf8Range> {
         if (rows.size == 0L || size.height <= 0.0) return []
+        val ranges = ArrayList<Utf8Range>()
         var first = -1L
+        var previous = -1L
         var end = 0L
         for (row in rows) {
             if (row.top + row.height <= origin.y || row.top >= origin.y + size.height) continue
@@ -166,17 +205,36 @@ internal class EditorFrame(
                 val top = row.top + visual.rect.y
                 if (top + visual.rect.height <= origin.y || top >= origin.y + size.height) continue
                 val a = row.range.start + row.ink.projection.sourceOffset(visual.range.start)
-                val b = row.range.start + row.ink.projection.sourceOffset(visual.range.end)
+                if (first >= 0L && row.line > previous + 1L) {
+                    ranges
+                        .add(
+                            Utf8Range(
+                                original(TextPosition(first)).byteOffset,
+                                original(TextPosition(end)).byteOffset
+                            )
+                        )
+                    first = -1L
+                }
                 if (first < 0L) first = a
-                end = b
+                previous = row.line
+                end = row.range.start + row.ink.projection.sourceOffset(visual.range.end)
             }
         }
-        if (first < 0L) return []
-        return [
-            Utf8Range(
-                original(TextPosition(first)).byteOffset,
-                original(TextPosition(end)).byteOffset
-            )
-        ]
+        if (first >= 0L)
+            ranges
+                .add(
+                    Utf8Range(
+                        original(TextPosition(first)).byteOffset,
+                        original(TextPosition(end)).byteOffset
+                    )
+                )
+        return ranges.toArray()
     }
+}
+
+internal fun equalVisibleRanges(a: Array<Utf8Range>, b: Array<Utf8Range>): Boolean {
+    if (a.size != b.size) return false
+    for (i in 0L..<a.size)
+        if (a[i] != b[i]) return false
+    return true
 }

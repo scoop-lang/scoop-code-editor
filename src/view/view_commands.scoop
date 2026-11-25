@@ -25,7 +25,9 @@ public class CodeViewState internal constructor(
     public val scrollOffset: Point,
     internal val first: CodePosition?,
     internal val pixelY: Double,
-    internal val affinity: TextAffinity
+    internal val affinity: TextAffinity,
+    public val manualFolds: Array<CodeFoldRange>,
+    public val collapsedFolds: Array<CodeFoldRange>
 )
 
 private fun CodeDocument.clampPosition(pos: CodePosition): Long {
@@ -64,11 +66,13 @@ public fun CodeEditorState.saveViewState(): CodeViewState {
         scroll.offset,
         first,
         anchor?.screenY ?: 0.0,
-        anchor?.affinity ?: TextAffinity.Downstream
+        anchor?.affinity ?: TextAffinity.Downstream,
+        folding.manualRanges(), folding.collapsedRanges()
     )
 }
 
 public fun CodeEditorState.restoreViewState(saved: CodeViewState) {
+    folding.restore(saved.manualFolds, saved.collapsedFolds)
     setSelections(
         Array<CodeSelection>(saved.selections.size) { i ->
             val s = saved.selections[i]

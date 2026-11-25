@@ -1,0 +1,48 @@
+package scoop.ui.editor
+
+import scoop.window.ShortcutModifiers
+
+internal fun CodeEditorState.installFoldActions() {
+    val line: (CodeEditorState) -> Long = { e ->
+        e.document.positionAt(e.selections.primary.cursor.byteOffset).line
+    }
+    val primaryAlt = ShortcutModifiers(primary = true, alt = true)
+    val recursive = ShortcutModifiers(primary = true, alt = true, shift = true)
+    addAction("fold.current", "Fold current range", characterShortcut("[", primaryAlt)) { e ->
+        e.folding.fold(line(e))
+    }
+    addAction("fold.unfold", "Unfold current range", characterShortcut("]", primaryAlt)) { e ->
+        e.folding.unfold(line(e))
+    }
+    addAction("fold.toggle", "Toggle fold") { e -> e.folding.toggle(line(e)) }
+    addAction("fold.recursive", "Fold recursively", characterShortcut("[", recursive)) { e ->
+        e.folding.fold(line(e), true)
+    }
+    addAction("fold.unfoldRecursive", "Unfold recursively", characterShortcut("]", recursive)) {
+        e
+        ->
+        e.folding.unfold(line(e), true)
+    }
+    addAction("fold.all", "Fold all", characterShortcut("0", primaryAlt)) { e ->
+        e.folding.foldAll()
+    }
+    addAction("fold.unfoldAll", "Unfold all", characterShortcut("9", primaryAlt)) { e ->
+        e.folding.unfoldAll()
+    }
+    addAction(
+        "fold.selection",
+        "Fold selection",
+        enabled = { e ->
+            var multiple = false
+            for (b in e.selectedLines())
+                if (b.last > b.first) multiple = true
+            multiple
+        }
+    ) { e ->
+        for (b in e.selectedLines())
+            if (b.last > b.first) e.folding.addManual(CodeFoldRange(b.first, b.last))
+    }
+    addAction("fold.removeManual", "Remove manual folding range") { e ->
+        e.folding.removeManual(line(e))
+    }
+}

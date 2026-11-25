@@ -88,11 +88,13 @@ private fun CodeDocument.commitPlan(
     val oldVersion = version
     val changed = ArrayList<CodeEditorState>()
     publishRoot(plan.root)
+    mapFoldAnchors(providedFolds, this, plan.mapping)
     decorationStore.map(plan.mapping)
     for (view in views) {
         view.decorationStore.map(plan.mapping)
         view.mapWidgets(plan.mapping)
         view.mapGeneratedPairs(plan.mapping)
+        view.folding.changed(plan.mapping)
         val matching = when (owner) {
             case Some(val active) -> active === view;
             case None -> false

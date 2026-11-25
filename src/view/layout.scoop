@@ -18,6 +18,8 @@ internal fun positive(value: Double): Double = if (value > 1.0) value else 1.0
 
 internal class CodeLayout(val ink: EditorInk) {
     private var index = ItemExtentIndex(0L, ItemExtent.Variable(20.0))
+    private var projection = FoldProjection(0L, [])
+    private var foldRevision = -1L
     private var width = -2.0
     private var options: CodeEditorOptions? = None
     private var version = -1L
@@ -30,9 +32,9 @@ internal class CodeLayout(val ink: EditorInk) {
     private var gutterStyle: TextStyle = textStyle()
 
     internal fun lineAtPage(line: Long, dy: Double): Long {
-        val y = index.prefix(line) + dy
+        val y = index.prefix(projection.index(line)) + dy
         val next = index.indexAt(if (y < 0.0) 0.0 else y)
-        return if (next < index.count) next else index.count - 1L
+        return projection.line(if (next < index.count) next else index.count - 1L)
     }
     internal fun close() {
         for (entry in cache)
@@ -46,19 +48,21 @@ internal class CodeLayout(val ink: EditorInk) {
         wrap: Double,
         tab: Long,
         used: ArrayList<ShapedLine>,
-        runs: Array<ColorRun> = []
+        runs: Array<ColorRun> = [],
+        suffix: String = ""
     ): ShapedLine {
         val fonts = ink.scope.defaultFonts
         for (line in used) {
-            if (line.matches(source, style, wrap, tab, fonts.revision, runs)) return line.retain()
+            if (line.matches(source, style, wrap, tab, fonts.revision, runs, suffix))
+                return line.retain()
         }
         for (line in cache) {
-            if (line.matches(source, style, wrap, tab, fonts.revision, runs)) {
+            if (line.matches(source, style, wrap, tab, fonts.revision, runs, suffix)) {
                 used.add(line.retain())
                 return line.retain()
             }
         }
-        val projection = LineProjection.from(source, tab)
+        val projection = LineProjection.from(source, tab, suffix)
         val paragraph = if (runs.size == 0L)
             Paragraph(fonts, projection.text, style)
         else
@@ -67,9 +71,41 @@ internal class CodeLayout(val ink: EditorInk) {
             .use { paragraph ->
                 if (wrap < 0.0) paragraph.layoutUnwrapped() else paragraph.layout(wrap)
             }
-        val line = ShapedLine(source, projection, layout, style, wrap, tab, fonts.revision, runs)
+        val line = ShapedLine(
+            source,
+            projection,
+            layout,
+            style,
+            wrap,
+            tab,
+            fonts.revision,
+            runs,
+            suffix
+        )
         used.add(line.retain())
         return line
+    }
+
+    private fun suffix(line: Long): String = if (projection.endOfFold(line) != None) "  …" else ""
+
+    internal fun <T> withDetachedLine(line: Long, frame: EditorFrame, run: (ScreenRow) -> T): T {
+        val r = frame.document.lineRange(line)
+        val used = ArrayList<ShapedLine>()
+        val wrap = if (frame.options.softWrap)
+            positive(frame.size.width - frame.gutter - 4.0)
+        else
+            -1.0
+        val body = shape(
+            frame.document.read(r), frame.options.text, wrap, frame.options.tabSize, used,
+            foregroundRuns(r, ink.decorationsFor(r)), suffix(line)
+        )
+        try {
+            return run(ScreenRow(line, r, body, None, 0.0, body.layout.size.height))
+        } finally {
+            body.release();
+            for (item in used)
+                item.release()
+        }
     }
 
     internal fun measure(context: MeasureContext, constraints: Constraints): EditorFrame {
@@ -78,12 +114,16 @@ internal class CodeLayout(val ink: EditorInk) {
         val doc = ink.input.preview ?: CodeSnapshot(state.document.root, state.document.version)
         val size = constraints
             .constrain(Size(constraints.maxWidth ?: 640.0, constraints.maxHeight ?: 360.0))
-        val gutter = if (opt.lineNumbers)
-            16.0 + doc.lineCount.toString().byteLength.toDouble() * opt.text.fontSize * 0.75
-        else
-            4.0
+        val folds = state.folding.projection(ink.input.preview, ink.input.previewMap)
+        val gutter = (
+            if (opt.lineNumbers)
+                16.0 + doc.lineCount.toString().byteLength.toDouble() * opt.text.fontSize * 0.75
+            else
+                4.0
+        ) +
+            (if (opt.foldingControls) 14.0 else 0.0)
         val wrap = if (opt.softWrap) positive(size.width - gutter - 4.0) else -1.0
-        val widgets = WidgetLayout(ink, context, size, gutter, doc)
+        val widgets = WidgetLayout(ink, context, size, gutter, doc, folds)
         val estimate = positive(opt.text.fontSize * 1.45)
         val styleChanged = when (options) {
             case Some(val previous) -> previous !== opt;
@@ -101,7 +141,9 @@ internal class CodeLayout(val ink: EditorInk) {
             previousFrame!!.scrollRevision ==
             state.scroll.requestRevision &&
             (
-                width !=
+                foldRevision !=
+                    state.folding.revision ||
+                    width !=
                     wrap ||
                     styleChanged ||
                     fontRevision !=
@@ -113,7 +155,10 @@ internal class CodeLayout(val ink: EditorInk) {
             anchor = previousFrame!!.readingAnchor(state.scroll.requestRevision)
         }
         if (styleChanged) gutterStyle = opt.text.copy { color = opt.gutter }
-        if (doc.lineCount !=
+        projection = folds
+        if (foldRevision !=
+            state.folding.revision ||
+            folds.count !=
             index.count ||
             doc.version !=
             version ||
@@ -126,7 +171,7 @@ internal class CodeLayout(val ink: EditorInk) {
             ink.projectionChanged
         ) {
             previousZones.clear()
-            index = ItemExtentIndex(doc.lineCount, ItemExtent.Variable(estimate))
+            index = ItemExtentIndex(folds.count, ItemExtent.Variable(estimate))
             maximumWidth = 0.0
             val old = ink.accepted
             if (!styleChanged &&
@@ -140,19 +185,27 @@ internal class CodeLayout(val ink: EditorInk) {
                 for (row in old!!.rows) {
                     if (row.line <
                         doc.lineCount &&
+                        !folds.hidden(row.line) &&
+                        row.ink.suffix ==
+                        suffix(row.line) &&
                         doc.read(doc.lineRange(row.line)) ==
                         row.ink.source
                     )
-                        index.record(row.line, row.height)
+                        index.record(folds.index(row.line), row.height)
                 }
             }
         }
         for (entry in previousZones) {
             val line = entry.key
-            if (line < index.count) index.record(line, positive(index.extent(line) - entry.value))
+            val i = folds.index(line)
+            if (i < index.count && !folds.hidden(line))
+                index.record(i, positive(index.extent(i) - entry.value))
         }
-        for (entry in widgets.zones)
-            index.record(entry.key, index.extent(entry.key) + entry.value)
+        for (entry in widgets.zones) {
+            val i = folds.index(entry.key)
+            index.record(i, index.extent(i) + entry.value)
+        }
+        foldRevision = state.folding.revision
         previousZones = widgets.zones
         version = doc.version
         revision = ink.input.state.revision
@@ -179,7 +232,7 @@ internal class CodeLayout(val ink: EditorInk) {
             if (pinned?.request == Some(scroll.requestRevision) && pending == None) {
                 val a = pinned!!
                 val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
-                anchorLine = doc.positionAt(offset).line
+                anchorLine = folds.line(folds.index(doc.positionAt(offset).line))
                 val r = doc.lineRange(anchorLine)
                 val body = shape(
                     doc.read(r),
@@ -187,13 +240,13 @@ internal class CodeLayout(val ink: EditorInk) {
                     wrap,
                     opt.tabSize,
                     used,
-                    foregroundRuns(r, ink.decorationsFor(r))
+                    foregroundRuns(r, ink.decorationsFor(r)), suffix(anchorLine)
                 )
                 try {
                     val local = if (offset > r.end) r.end - r.start else offset - r.start
                     withinAnchor = (body.layout.caret(body.display(local, a.affinity))?.y ?: 0.0) -
                         a.screenY
-                    y = index.prefix(anchorLine) + withinAnchor
+                    y = index.prefix(folds.index(anchorLine)) + withinAnchor
                     adjustment = Some(
                         ScrollAdjustment(a.request, Point(x, if (y > 0.0) y else 0.0))
                     )
@@ -210,11 +263,11 @@ internal class CodeLayout(val ink: EditorInk) {
                         wrap,
                         opt.tabSize,
                         used,
-                        foregroundRuns(r, ink.decorationsFor(r))
+                        foregroundRuns(r, ink.decorationsFor(r)), suffix(line)
                     )
                     try {
                         val h = positive(body.layout.size.height)
-                        index.record(line, h + (widgets.zones[line] ?: 0.0))
+                        index.record(folds.index(line), h + (widgets.zones[line] ?: 0.0))
                         val measured = body.layout.size.width + gutter + 4.0
                         if (measured > maximumWidth) maximumWidth = measured
                         val offset = ink.input.previewMap?.map(pending!!.end) ?: pending!!.end
@@ -222,7 +275,7 @@ internal class CodeLayout(val ink: EditorInk) {
                         val caret = body
                             .layout
                             .caret(body.display(local))
-                        val top = index.prefix(line) + (caret?.y ?: 0.0)
+                        val top = index.prefix(folds.index(line)) + (caret?.y ?: 0.0)
                         val bottom = top + (caret?.height ?: h)
                         if (state.centerReveal)
                             y = (top + bottom - size.height) / 2.0
@@ -249,13 +302,14 @@ internal class CodeLayout(val ink: EditorInk) {
             }
             var offered = ink.bars.layout(size, Size(maximumWidth, index.total), adjustment)
             y = offered.presentationOffset.y
-            var line = index.indexAt(if (y > 0.0) y else 0.0)
-            if (line > 0L) line -= 1L
+            var visual = index.indexAt(if (y > 0.0) y else 0.0)
+            if (visual > 0L) visual -= 1L
             while (
-                line <
-                    doc.lineCount &&
-                    (rows.size == 0L || index.prefix(line) <= y + size.height + estimate)
+                visual <
+                    folds.count &&
+                    (rows.size == 0L || index.prefix(visual) <= y + size.height + estimate)
             ) {
+                val line = folds.line(visual)
                 val r = doc.lineRange(line)
                 val body = shape(
                     doc.read(r),
@@ -263,21 +317,24 @@ internal class CodeLayout(val ink: EditorInk) {
                     wrap,
                     opt.tabSize,
                     used,
-                    foregroundRuns(r, ink.decorationsFor(r))
+                    foregroundRuns(r, ink.decorationsFor(r)), suffix(line)
                 )
                 val label = if (opt.lineNumbers)
                     Some(shape((line + 1L).toString(), gutterStyle, -1.0, 1L, used))
                 else
                     None
                 val h = positive(body.layout.size.height)
-                index.record(line, h + (widgets.zones[line] ?: 0.0))
-                rows.add(ScreenRow(line, r, body, label, index.prefix(line), h))
+                index.record(folds.index(line), h + (widgets.zones[line] ?: 0.0))
+                val original = ink.input.reverseMap?.map(r.start) ?: r.start
+                val header = opt.foldingControls &&
+                    state.folding.header(state.document.positionAt(original).line)
+                rows.add(ScreenRow(line, r, body, label, index.prefix(visual), h, header))
                 val measured = body.layout.size.width + gutter + 4.0
                 if (measured > maximumWidth) maximumWidth = measured
-                line += 1L
+                visual += 1L
             }
             if (anchorLine >= 0L) {
-                val corrected = index.prefix(anchorLine) + withinAnchor
+                val corrected = index.prefix(folds.index(anchorLine)) + withinAnchor
                 adjustment = Some(
                     ScrollAdjustment(
                         scroll.requestRevision,
@@ -302,7 +359,7 @@ internal class CodeLayout(val ink: EditorInk) {
                 rows.toArray(),
                 ink.input.previewMap,
                 ink.input.reverseMap, ink.decorationRevision, ink.contents.widgets, scroll
-                    .requestRevision
+                    .requestRevision, folds, state.folding.revision
             )
             widgets.place(frame, index)
             return frame

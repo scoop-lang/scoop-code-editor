@@ -175,6 +175,8 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
         editor.widgetList.value &&
         frame.scrollRevision ==
         editor.scroll.requestRevision &&
+        frame.foldRevision ==
+        editor.folding.revision &&
         frame.decorationRevision ==
         decorationRevision &&
         (!input.composing || frame.inputRevision == input.state.revision) &&
@@ -274,10 +276,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                     if (editor.reveal == pending) editor.reveal = None
                     layoutEngine.anchor = None
                     val ranges = retained.visible()
-                    if (ranges.size !=
-                        previousVisible.size ||
-                        (ranges.size > 0L && ranges[0L] != previousVisible[0L])
-                    ) {
+                    if (!equalVisibleRanges(ranges, previousVisible)) {
                         previousVisible = ranges
                         editor.viewportEvents.emit(ranges)
                     }

@@ -1,0 +1,174 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.window.Utf8Range
+
+/** Header and final logical line, zero based and inclusive. */
+public struct CodeFoldRange(val first: Long, val last: Long)
+
+internal class FoldAnchor(var header: Long, var end: Long) {
+    fun lines(doc: CodeDocument): CodeFoldRange = CodeFoldRange(
+        doc.positionAt(header).line,
+        doc.positionAt(end).line
+    )
+}
+
+internal fun CodeDocument.foldAnchor(r: CodeFoldRange): FoldAnchor {
+    if (r.first < 0L || r.last <= r.first || r.last >= lineCount)
+        throw IllegalArgumentException(Some("invalid folding range"))
+    return FoldAnchor(lineRange(r.first).start, lineRange(r.last).end)
+}
+
+internal fun mapFoldAnchors(items: ArrayList<FoldAnchor>, doc: CodeDocument, map: CodeEditMap) {
+    var i = items.size
+    while (i > 0L) {
+        i -= 1L
+        val f = items[i]
+        f.header = map.map(f.header, CodeStickiness.After)
+        f.end = map.map(f.end, CodeStickiness.Before)
+        if (f.header >= f.end || doc.positionAt(f.header).line >= doc.positionAt(f.end).line)
+            items.removeAt(i)
+    }
+}
+
+internal fun sortedFolds(input: List<CodeFoldRange>): Array<CodeFoldRange> {
+    val list = ArrayList<CodeFoldRange>()
+    for (r in input)
+        list.add(r)
+    list
+        .sortWith(
+            comparatorOf<CodeFoldRange> { a, b ->
+                if (a.first == b.first) b.last.compareTo(a.last) else a.first.compareTo(b.first)
+            }
+        )
+    return list.toArray()
+}
+
+/** Publishes ranges computed against a particular document version. Empty input removes this contribution. */
+public fun CodeDocument.setFoldingRanges(
+    expectedVersion: Long,
+    ranges: List<CodeFoldRange>
+): Boolean {
+    if (expectedVersion != version || busy) return false
+    val checked = ArrayList<FoldAnchor>()
+    val parents = ArrayList<CodeFoldRange>()
+    for (r in sortedFolds(ranges)) {
+        val f = foldAnchor(r)
+        while (parents.size > 0L && parents[parents.size - 1L].last < r.first)
+            parents.removeAt(parents.size - 1L)
+        if (parents.size > 0L) {
+            val previous = parents[parents.size - 1L]
+            if (previous == r) continue
+            if (previous.first == r.first || r.last > previous.last)
+                throw IllegalArgumentException(Some("crossing folding ranges"))
+        }
+        checked.add(f)
+        parents.add(r)
+    }
+    providedFolds.clear()
+    for (f in checked)
+        providedFolds.add(f)
+    for (view in views)
+        view.folding.candidatesChanged()
+    return true
+}
+
+private class IndentedHeader(val line: Long, val indent: Long)
+
+internal fun CodeDocument.indentLevel(line: Long, tab: Long): Long {
+    val indent = indentRange(line)
+    if (indent.end == lineRange(line).end) return -1L
+    return indentColumns(read(indent), tab)
+}
+
+internal fun CodeDocument.indentHeader(line: Long, tab: Long): Boolean {
+    val level = indentLevel(line, tab)
+    if (level < 0L) return false
+    var next = line + 1L
+    while (next < lineCount) {
+        val depth = indentLevel(next, tab)
+        if (depth >= 0L) return depth > level
+        next += 1L
+    }
+    return false
+}
+
+internal fun CodeDocument.indentedFoldRanges(tab: Long): Array<CodeFoldRange> {
+    val headers = ArrayList<IndentedHeader>()
+    val ranges = ArrayList<CodeFoldRange>()
+    var previous = -1L
+    var lastIndent = -1L
+    for (line in 0L..<lineCount) {
+        val depth = indentLevel(line, tab)
+        if (depth < 0L) continue
+        while (headers.size > 0L && depth <= headers[headers.size - 1L].indent) {
+            val h = headers.removeAt(headers.size - 1L)
+            ranges.add(CodeFoldRange(h.line, previous))
+        }
+        if (previous >= 0L && depth > lastIndent) headers.add(IndentedHeader(previous, lastIndent))
+        previous = line
+        lastIndent = depth
+    }
+    for (h in headers)
+        ranges.add(CodeFoldRange(h.line, previous))
+    return sortedFolds(ranges)
+}
+
+private class HiddenFold(val header: Long, val last: Long, val before: Long) {
+    val visible: Long get() = header - before
+    val skipped: Long get() = before + last - header
+}
+
+internal class FoldProjection(private val total: Long, ranges: List<CodeFoldRange>) {
+    private val hidden = ArrayList<HiddenFold>()
+    val count: Long
+        get() = if (hidden.size == 0L) total else total - hidden[hidden.size - 1L].skipped
+    init {
+        var omitted = 0L
+        var header = -1L
+        var last = -1L
+        for (r in sortedFolds(ranges)) {
+            if (r.first < 0L || r.first >= r.last || r.last >= total) continue
+            if (header >= 0L && r.first <= last) {
+                if (r.last > last) last = r.last
+            } else {
+                if (header >= 0L) {
+                    hidden.add(HiddenFold(header, last, omitted));
+                    omitted += last - header
+                }
+                header = r.first
+                last = r.last
+            }
+        }
+        if (header >= 0L) {
+            hidden.add(HiddenFold(header, last, omitted));
+        }
+    }
+    private fun previous(line: Long, visual: Boolean): HiddenFold? {
+        var low = 0L
+        var high = hidden.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            val h = hidden[mid]
+            if ((if (visual) h.visible else h.header) <= line) low = mid + 1L else high = mid
+        }
+        return if (low == 0L) None else Some(hidden[low - 1L])
+    }
+    fun index(line: Long): Long {
+        val f = previous(line, false) ?: return line
+        return if (line <= f.last) f.visible else line - f.skipped
+    }
+    fun line(index: Long): Long {
+        val f = previous(index, true) ?: return index
+        return if (index == f.visible) f.header else index + f.skipped
+    }
+    fun hidden(line: Long): Boolean {
+        val f = previous(line, false) ?: return false
+        return line > f.header && line <= f.last
+    }
+    fun endOfFold(line: Long): Long? {
+        val f = previous(line, false) ?: return None
+        return if (line == f.header) Some(f.last) else None
+    }
+}

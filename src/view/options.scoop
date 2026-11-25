@@ -20,7 +20,8 @@ public class CodeEditorOptions public constructor(
     public val insertSpaces: Boolean = false,
     public val indentSize: Long = tabSize,
     public val multiCursorPaste: CodeMultiCursorPaste = CodeMultiCursorPaste.Spread,
-    public val scrollbars: ScrollbarVisibility = ScrollbarVisibility.Auto
+    public val scrollbars: ScrollbarVisibility = ScrollbarVisibility.Auto,
+    public val foldingControls: Boolean = true
 ) {
     init {
         if (tabSize <= 0L || indentSize <= 0L)

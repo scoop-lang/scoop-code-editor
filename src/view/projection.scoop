@@ -31,7 +31,8 @@ private struct TabRun(val source: Long, val display: Long, val spaces: Long)
 
 internal class LineProjection private constructor(
     internal val text: String,
-    private val tabs: Array<TabRun>
+    private val tabs: Array<TabRun>,
+    internal val sourceEnd: Long
 ) {
     internal fun displayOffset(source: Long): Long {
         var low = 0L
@@ -46,6 +47,7 @@ internal class LineProjection private constructor(
     }
 
     internal fun sourceOffset(display: Long): Long {
+        if (display >= sourceEnd) return sourceLength()
         var low = 0L
         var high = tabs.size
         while (low < high) {
@@ -59,10 +61,20 @@ internal class LineProjection private constructor(
         return run.source + 1L + distance - run.spaces
     }
 
+    private fun sourceLength(): Long {
+        if (tabs.size == 0L) return sourceEnd
+        val last = tabs[tabs.size - 1L]
+        return last.source + 1L + sourceEnd - last.display - last.spaces
+    }
     internal companion object {
-        internal fun from(text: String, tabSize: Long): LineProjection {
+        internal fun from(text: String, tabSize: Long, suffix: String = ""): LineProjection {
             if (tabSize <= 0L) throw IllegalArgumentException(Some("tab size must be positive"))
-            if (text.indexOf("\t") < 0L) return LineProjection(text, [])
+            if (text.indexOf("\t") < 0L)
+                return LineProjection(
+                    if (suffix.byteLength == 0L) text else text + suffix,
+                    [],
+                    text.byteLength
+                )
             val boundaries = graphemeBoundaries(text)
             val output = StringBuilder()
             val tabs = ArrayList<TabRun>()
@@ -93,7 +105,8 @@ internal class LineProjection private constructor(
                 source += scalarBytes(ch)
                 scalar += 1L
             }
-            return LineProjection(output.toString(), tabs.toArray())
+            output.append(suffix)
+            return LineProjection(output.toString(), tabs.toArray(), display)
         }
     }
 }

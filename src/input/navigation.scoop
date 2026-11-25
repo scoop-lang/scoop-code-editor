@@ -12,35 +12,10 @@ internal fun <T> EditorInk.withLine(
     for (row in frame.rows) {
         if (row.line == line) return run(row)
     }
-    val r = editor.document.lineRange(line)
-    val text = editor.document.read(r)
-    val p = LineProjection.from(text, editor.options.tabSize)
-    val style = editor.options.text
-    val fonts = scope.defaultFonts
-    return Paragraph(fonts, p.text, style)
-        .use { para ->
-            val width = if (editor.options.softWrap)
-                positive(frame.size.width - frame.gutter - 4.0)
-            else
-                -1.0
-            val layout = if (width < 0.0) para.layoutUnwrapped() else para.layout(width)
-            layout
-                .use { value ->
-                    val ink = ShapedLine(
-                        text,
-                        p,
-                        value,
-                        style,
-                        width,
-                        editor.options.tabSize,
-                        fonts.revision
-                    )
-                    run(ScreenRow(line, r, ink, None, 0.0, value.size.height))
-                }
-        }
+    return layoutEngine.withDetachedLine(line, frame, run)
 }
 
-internal fun EditorInk.destination(
+private fun EditorInk.moveInLayout(
     cursor: TextPosition,
     move: TextMovement,
     preferred: Double?,
@@ -134,7 +109,11 @@ internal fun EditorInk.destination(
                         )
                 )
             }
-            if (next != None && next!!.position != pos) return@withLine row.source(next!!.position)
+            if (next != None && next!!.position != pos) {
+                val result = row.source(next!!.position)
+                if (result.byteOffset != cursor.byteOffset || row.ink.suffix.byteLength == 0L)
+                    return@withLine result
+            }
             if (move ==
                 TextMovement.LineStart ||
                 move ==
@@ -147,15 +126,25 @@ internal fun EditorInk.destination(
                 return@withLine cursor
         }
         if (move == TextMovement.Up || move == TextMovement.Down) {
-            val target = logical.line + if (move == TextMovement.Up) -1L else 1L
-            if (target < 0L || target >= doc.lineCount) return@withLine cursor
-            return@withLine withLine(target, frame) { next ->
+            val target = frame.folds.index(logical.line) + if (move == TextMovement.Up) -1L else 1L
+            if (target < 0L || target >= frame.folds.count) return@withLine cursor
+            return@withLine withLine(frame.folds.line(target), frame) { next ->
                 val y = if (move == TextMovement.Up) next.height - 1.0 else 0.0
                 next.source(next.ink.layout.hitTest(Point(preferred ?: 0.0, y)))
             }
         }
         TextPosition(adjacentGrapheme(doc, cursor.byteOffset, forward))
     }
+}
+
+internal fun EditorInk.destination(
+    cursor: TextPosition,
+    move: TextMovement,
+    preferred: Double?,
+    frame: EditorFrame
+): TextPosition {
+    val next = moveInLayout(cursor, move, preferred, frame)
+    return editor.folding.visibleDestination(cursor, next, frame.folds)
 }
 
 internal fun EditorInk.move(motion: TextMovement, extend: Boolean) {
