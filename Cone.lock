@@ -7,6 +7,20 @@ target = "aarch64-apple-darwin"
 root-coordinate = "scoop:scoop.ui.editor:0.1.0"
 
 [[resolutions.nodes]]
+coordinate = "scoop:scoop.charset:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.platform:0.1.0",
+    "scoop:scoop.std:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.charset"
+
+[[resolutions.nodes]]
 coordinate = "scoop:scoop.core:0.1.0"
 kind = "library"
 dependencies = []
@@ -96,6 +110,7 @@ name = "scoop.test"
 coordinate = "scoop:scoop.ui.editor:0.1.0"
 kind = "library"
 dependencies = [
+    "scoop:scoop.charset:0.1.0",
     "scoop:scoop.core:0.1.0",
     "scoop:scoop.graphics.text:0.1.0",
     "scoop:scoop.std:0.1.0",

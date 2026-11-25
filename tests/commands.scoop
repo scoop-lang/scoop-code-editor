@@ -1,0 +1,59 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class EditorCommandTests {
+    @Test
+    fun graphemesMoveDeleteAndUndoAcrossMixedEndings() {
+        val doc = CodeDocument("A👩‍💻é\r\n中\r")
+        val state = CodeEditorState(doc)
+        state.moveHorizontal(true)
+        assertEquals(1L, state.selections.primary.cursor.byteOffset)
+        state.moveHorizontal(true)
+        assertEquals(12L, state.selections.primary.cursor.byteOffset)
+        state.moveHorizontal(true)
+        assertEquals(15L, state.selections.primary.cursor.byteOffset)
+        state.moveHorizontal(true)
+        assertEquals(17L, state.selections.primary.cursor.byteOffset)
+        state.deleteGrapheme(false)
+        state.deleteGrapheme(false)
+        assertEquals("A👩‍💻中\r", doc.read(Utf8Range(0L, doc.byteLength)))
+        state.undo()
+        assertEquals("A👩‍💻é\r\n中\r", doc.read(Utf8Range(0L, doc.byteLength)))
+        state.setSelections([CodeSelection.caret(doc.byteLength)])
+        state.insertNewline()
+        assertEquals("\r", doc.read(doc.lineRange(2L, true)))
+    }
+
+    @Test
+    fun tabsUseGraphemeColumnsAndMapOnlyToSourceEndpoints() {
+        val line = LineProjection.from("中\té\t🙂", 4L)
+        assertEquals("中  é   🙂", line.text)
+        assertEquals(5L, line.displayOffset(4L))
+        assertEquals(11L, line.displayOffset(8L))
+        assertEquals(4L, line.sourceOffset(4L))
+        assertEquals(7L, line.sourceOffset(9L))
+        assertEquals(8L, line.sourceOffset(10L))
+    }
+
+    @Test
+    fun indentDeduplicatesLinesAndPreservesRawClipboardText() {
+        val doc = CodeDocument("a\r\nb\nc")
+        val state = CodeEditorState(doc)
+        state
+            .setSelections(
+                [
+                    CodeSelection.offsets(0L, 3L),
+                    CodeSelection.caret(1L),
+                    CodeSelection.offsets(3L, 4L)
+                ]
+            )
+        assertEquals("a\r\n\nb", state.selectedText())
+        state.indent()
+        assertEquals("\ta\r\n\tb\nc", doc.read(Utf8Range(0L, doc.byteLength)))
+        state.indent(true)
+        assertEquals("a\r\nb\nc", doc.read(Utf8Range(0L, doc.byteLength)))
+    }
+}

@@ -1,0 +1,99 @@
+package scoop.ui.editor
+
+import scoop.charset.graphemeBoundaries
+import scoop.text.indexOf
+import scoop.charset.unicodeScalarWidth
+
+internal fun scalarBytes(ch: Char): Long {
+    val cp = ch.code
+    return if (cp < 128) 1L else if (cp < 2048) 2L else if (cp < 65536) 3L else 4L
+}
+
+internal fun graphemeOffsets(text: String): Array<Long> {
+    val scalars = graphemeBoundaries(text)
+    val result = ArrayList<Long>()
+    var next = 0L
+    var scalar = 0L
+    var bytes = 0L
+    for (ch in text) {
+        if (scalar == scalars[next]) {
+            result.add(bytes);
+            next += 1L
+        }
+        bytes += scalarBytes(ch)
+        scalar += 1L
+    }
+    result.add(bytes)
+    return result.toArray()
+}
+
+private struct TabRun(val source: Long, val display: Long, val spaces: Long)
+
+internal class LineProjection private constructor(
+    internal val text: String,
+    private val tabs: Array<TabRun>
+) {
+    internal fun displayOffset(source: Long): Long {
+        var low = 0L
+        var high = tabs.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (tabs[mid].source < source) low = mid + 1L else high = mid
+        }
+        if (low == 0L) return source
+        val run = tabs[low - 1L]
+        return source + run.display + run.spaces - run.source - 1L
+    }
+
+    internal fun sourceOffset(display: Long): Long {
+        var low = 0L
+        var high = tabs.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (tabs[mid].display < display) low = mid + 1L else high = mid
+        }
+        if (low == 0L) return display
+        val run = tabs[low - 1L]
+        val distance = display - run.display
+        if (distance < run.spaces) return run.source + if (distance * 2L < run.spaces) 0L else 1L
+        return run.source + 1L + distance - run.spaces
+    }
+
+    internal companion object {
+        internal fun from(text: String, tabSize: Long): LineProjection {
+            if (tabSize <= 0L) throw IllegalArgumentException(Some("tab size must be positive"))
+            if (text.indexOf("\t") < 0L) return LineProjection(text, [])
+            val boundaries = graphemeBoundaries(text)
+            val output = StringBuilder()
+            val tabs = ArrayList<TabRun>()
+            var scalar = 0L
+            var cluster = 0L
+            var column = 0L
+            var width = 0L
+            var source = 0L
+            var display = 0L
+            for (ch in text) {
+                if (scalar == boundaries[cluster]) {
+                    column += width
+                    width = 1L
+                    cluster += 1L
+                }
+                if (ch == '\t') {
+                    width = tabSize - column % tabSize
+                    tabs.add(TabRun(source, display, width))
+                    for (i in 0L..<width)
+                        output.append(" ")
+                    display += width
+                } else {
+                    val cells = unicodeScalarWidth(ch).toLong()
+                    if (cells > width) width = cells
+                    output.append(ch)
+                    display += scalarBytes(ch)
+                }
+                source += scalarBytes(ch)
+                scalar += 1L
+            }
+            return LineProjection(output.toString(), tabs.toArray())
+        }
+    }
+}

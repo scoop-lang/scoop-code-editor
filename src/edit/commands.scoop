@@ -1,0 +1,163 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.TextPosition
+import scoop.window.Utf8Range
+
+internal fun adjacentGrapheme(doc: CodeDocument, offset: Long, forward: Boolean): Long {
+    val pos = doc.positionAt(offset)
+    val range = doc.lineRange(pos.line)
+    if (forward && offset >= range.end) return doc.lineRange(pos.line, true).end
+    if (!forward && offset > range.end) return range.end
+    if (!forward && offset == range.start) {
+        if (pos.line == 0L) return 0L
+        return doc.lineRange(pos.line - 1L).end
+    }
+    val boundaries = graphemeOffsets(doc.read(range))
+    var previous = range.start
+    for (boundary in boundaries) {
+        val current = range.start + boundary
+        if (forward && current > offset) return current
+        if (!forward && current >= offset) return previous
+        previous = current
+    }
+    return range.end
+}
+
+public fun CodeEditorState.moveHorizontal(forward: Boolean, extend: Boolean = false) {
+    val input = selections
+    val output = ArrayList<CodeSelection>()
+    for (s in input.values) {
+        val range = s.range
+        val next = if (!extend && range.start != range.end) {
+            if (forward) range.end else range.start
+        } else
+            adjacentGrapheme(document, s.cursor.byteOffset, forward)
+        val cursor = TextPosition(next)
+        output.add(CodeSelection(if (extend) s.anchor else cursor, cursor))
+    }
+    setSelections(output, input.primaryIndex)
+}
+
+public fun CodeEditorState.moveToLineEdge(end: Boolean, extend: Boolean = false) {
+    val input = selections
+    val output = ArrayList<CodeSelection>()
+    for (s in input.values) {
+        val line = document.lineRange(document.positionAt(s.cursor.byteOffset).line)
+        val cursor = TextPosition(if (end) line.end else line.start)
+        output.add(CodeSelection(if (extend) s.anchor else cursor, cursor))
+    }
+    setSelections(output, input.primaryIndex)
+}
+
+public fun CodeEditorState.selectAll() {
+    setSelections([CodeSelection.offsets(0L, document.byteLength)])
+}
+
+private fun CodeEditorState.replaceEach(
+    kind: CodeEditKind,
+    text: (CodeSelection) -> String
+): CodeEditResult {
+    val before = selections
+    val edits = Array<CodeEdit>(before.values.size) { i ->
+        CodeEdit(before.values[i].range, text(before.values[i]))
+    }
+    return executeEdits(
+        document.version,
+        edits,
+        Some(
+            { map ->
+                CodeSelections(
+                    Array<CodeSelection>(edits.size) { i ->
+                        CodeSelection.caret(map.insertedRange(i).end)
+                    },
+                    before.primaryIndex
+                )
+            }
+        ),
+        kind
+    )
+}
+
+public fun CodeEditorState.replaceSelections(
+    text: String,
+    kind: CodeEditKind = CodeEditKind.Typing
+): CodeEditResult = replaceEach(kind) { _ -> text }
+
+public fun CodeEditorState.insertNewline(): CodeEditResult = replaceEach(CodeEditKind.Command) {
+    selection
+    ->
+    val doc = document
+    var line = doc.positionAt(selection.cursor.byteOffset).line
+    if (line == doc.lineCount - 1L && line > 0L) line -= 1L
+    val end = doc.lineRange(line).end
+    val next = doc.lineRange(line, true).end
+    if (end == next) "\n" else doc.read(Utf8Range(end, next))
+}
+
+public fun CodeEditorState.deleteGrapheme(forward: Boolean): CodeEditResult {
+    val edits = ArrayList<CodeEdit>()
+    for (s in selections.values) {
+        var r = s.range
+        if (r.start == r.end) {
+            val offset = adjacentGrapheme(document, r.start, forward)
+            r = if (forward) Utf8Range(r.start, offset) else Utf8Range(offset, r.start)
+        }
+        if (r.start == r.end) continue
+        val i = edits.size - 1L
+        if (i >= 0L && edits[i].range.end > r.start) {
+            val old = edits[i].range
+            edits[i] = CodeEdit(Utf8Range(old.start, if (old.end > r.end) old.end else r.end), "")
+        } else
+            edits.add(CodeEdit(r, ""))
+    }
+    return executeEdits(
+        document.version,
+        edits,
+        None,
+        if (forward) CodeEditKind.DeleteForward else CodeEditKind.Backspace
+    )
+}
+
+public fun CodeEditorState.selectedText(): String {
+    val out = StringBuilder()
+    for (i in 0L..<selections.values.size) {
+        if (i > 0L) out.append("\n")
+        out.append(document.read(selections.values[i].range))
+    }
+    return out.toString()
+}
+
+public fun CodeEditorState.indent(outdent: Boolean = false, tabSize: Long = 4L): CodeEditResult {
+    if (tabSize <= 0L) return CodeEditResult.Invalid
+    val edits = ArrayList<CodeEdit>()
+    var touched = -1L
+    for (s in selections.values) {
+        val r = s.range
+        val first = document.positionAt(r.start).line
+        val end = document.positionAt(r.end)
+        val last = if (r.start < r.end && end.column == 0L && end.line > first)
+            end.line - 1L
+        else
+            end.line
+        for (line in first..<last + 1L) {
+            if (line <= touched) continue
+            touched = line
+            val range = document.lineRange(line)
+            if (outdent) {
+                var bytes = 0L
+                while (bytes < tabSize && range.start + bytes < range.end) {
+                    val ch = treeByte(document.root, range.start + bytes).toInt()
+                    if (bytes == 0L && ch == 9) {
+                        bytes = 1L;
+                        break
+                    }
+                    if (ch != 32) break
+                    bytes += 1L
+                }
+                if (bytes > 0L) edits.add(CodeEdit(Utf8Range(range.start, range.start + bytes), ""))
+            } else
+                edits.add(CodeEdit(Utf8Range(range.start, range.start), "\t"))
+        }
+    }
+    return executeEdits(document.version, edits)
+}
