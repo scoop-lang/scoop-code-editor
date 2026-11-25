@@ -1,0 +1,185 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.surface.ShortcutScope
+import scoop.surface.shortcutBinding
+import scoop.graphics.text.*
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.text.TextEditorState
+import scoop.text.split
+import scoop.text.trim
+import scoop.text.toLongOrNone
+import scoop.window.*
+
+public struct CodeSavedSelection(
+    val anchor: CodePosition,
+    val anchorAffinity: TextAffinity,
+    val cursor: CodePosition,
+    val cursorAffinity: TextAffinity
+)
+
+public class CodeViewState internal constructor(
+    public val selections: Array<CodeSavedSelection>,
+    public val primaryIndex: Long,
+    public val scrollOffset: Point,
+    internal val first: CodePosition?,
+    internal val pixelY: Double,
+    internal val affinity: TextAffinity
+)
+
+private fun CodeDocument.clampPosition(pos: CodePosition): Long {
+    val line = if (pos.line < 0L) 0L else if (pos.line >= lineCount) lineCount - 1L else pos.line
+    val range = lineRange(line)
+    val length = range.end - range.start
+    var column = if (pos.column < 0L) 0L else if (pos.column > length) length else pos.column
+    while (!scalarBoundary(root, range.start + column))
+        column -= 1L
+    return range.start + column
+}
+
+public fun CodeEditorState.saveViewState(): CodeViewState {
+    val old = selections
+    val ink = mounted
+    val frame = when (ink) {
+        case Some(val view) -> view.currentFrame();
+        case None -> None
+    }
+    val anchor = frame?.readingAnchor(scroll.requestRevision) ?: None
+    val first = when (anchor) {
+        case Some(val a) -> Some(document.positionAt(a.offset));
+        case None -> None
+    }
+    return CodeViewState(
+        Array<CodeSavedSelection>(old.values.size) { i ->
+            val s = old.values[i]
+            CodeSavedSelection(
+                document.positionAt(s.anchor.byteOffset),
+                s.anchor.affinity,
+                document.positionAt(s.cursor.byteOffset),
+                s.cursor.affinity
+            )
+        },
+        old.primaryIndex,
+        scroll.offset,
+        first,
+        anchor?.screenY ?: 0.0,
+        anchor?.affinity ?: TextAffinity.Downstream
+    )
+}
+
+public fun CodeEditorState.restoreViewState(saved: CodeViewState) {
+    setSelections(
+        Array<CodeSelection>(saved.selections.size) { i ->
+            val s = saved.selections[i]
+            CodeSelection(
+                TextPosition(document.clampPosition(s.anchor), s.anchorAffinity),
+                TextPosition(document.clampPosition(s.cursor), s.cursorAffinity)
+            )
+        },
+        saved.primaryIndex
+    )
+    reveal = None
+    scroll.scrollTo(saved.scrollOffset)
+    pendingReading = when (val first = saved.first) {
+        case Some(val pos) ->
+            Some(
+                ReadingAnchor(
+                    document.clampPosition(pos),
+                    saved.pixelY,
+                    scroll.requestRevision,
+                    saved.affinity
+                )
+            )
+        case None -> None
+    }
+    when (val ink = mounted) {
+        case Some(val view) -> {
+            view.layoutEngine.anchor = pendingReading;
+            pendingReading = None;
+            view.scope.requestLayout()
+        }
+
+        case None -> {}
+    }
+}
+
+public fun CodeEditorState.goTo(position: CodePosition) {
+    val offset = document.clampPosition(position)
+    setSelections([CodeSelection.caret(offset)])
+    revealRange(selections.primary.range)
+}
+
+internal fun CodeEditorState.goToUserLocation(text: String): Boolean {
+    val fields = text.trim().split(':')
+    if (fields.size < 1L || fields.size > 2L) return false
+    val number = fields[0L].trim().toLongOrNone() ?: return false
+    val column = if (fields.size == 2L) fields[1L].trim().toLongOrNone() ?: return false else 1L
+    if (number <= 0L || number > document.lineCount || column <= 0L) return false
+    val row = document.lineRange(number - 1L)
+    var index = 1L
+    var bytes = 0L
+    for (ch in document.read(row)) {
+        if (index == column) break
+        bytes += scalarBytes(ch)
+        index += 1L
+    }
+    goTo(CodePosition(number - 1L, bytes))
+    return true
+}
+
+internal fun ComponentScope.panelEscape(ready: () -> Boolean, close: () -> Unit) {
+    val keys = resource { ShortcutScope(input) }
+    keys.bindings = [
+        shortcutBinding(namedShortcut(NamedKey.Escape)!!, close) { canExecute = ready }
+    ]
+}
+
+internal class GoToPanel(val editor: CodeEditorState, scope: ComponentScope) : Component(scope) {
+    private val field = TextEditorState(
+        (editor.document.positionAt(editor.selections.primary.cursor.byteOffset).line + 1L)
+            .toString()
+    )
+    private val focus = FocusHandle()
+    private val issue = state("")
+    public override fun onMount() {
+        scope.panelEscape({ field.markedRange == None }) { close() }
+        scope.application.proxy().post { _ -> if (scope.isMounted) focus.requestFocus() }
+    }
+    private fun close() {
+        editor.gotoPanel?.close()
+        editor.gotoPanel = None
+        editor.focusAfterLayout = true
+        when (val ink = editor.mounted) {
+            case Some(val view) -> view.scope.requestLayout();
+            case None -> {}
+        }
+    }
+    private fun submit() {
+        if (editor.goToUserLocation(field.text))
+            close()
+        else
+            issue.value = "Enter a valid line or line:column"
+    }
+    public override fun render(): View {
+        val panel = this
+        val source = Some(editor.uiTheme())
+        val target = focus
+        val value = input(panel.field) {
+            theme = source
+            label = "Go to line";
+            placeholder = "Line:column";
+            this.focus = FocusOptions(handle = Some(target));
+            onSubmit = { _ -> panel.submit() }
+        }
+        val go = button("Go", { submit() }) { theme = source }
+        val cancel = button("Cancel", { close() }) { theme = source }
+        val error = issue.value
+        return column {
+            item(value);
+            if (error.byteLength > 0L) label(error) { theme = source };
+            item(go);
+            item(cancel)
+        }
+    }
+}

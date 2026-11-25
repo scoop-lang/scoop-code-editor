@@ -1,0 +1,213 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.TextPosition
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Test
+private class NativePointerTests {
+    @Ignore("Run validation/appkit.sh on macOS")
+    @Test(useProcess = true)
+    fun nativePointerSelectionDragsWordsLinesColumnsAndScrollsOutsideTheEditor() {
+        withEditorProbe("scoop_editor_appkit_navigation") { navigation ->
+            withEditorMouse { mouse ->
+                val probe = NativeSelectionProbe(mouse, navigation)
+                UiHost(
+                    onRootError = { _, err -> throw err },
+                    handler = { host, app, event -> probe.event(host, app, event) }
+                )
+                    .use { h -> Application().run(h) }
+                assertTrue(probe.finished)
+            }
+        }
+    }
+}
+
+private class NativeSelectionProbe(
+    val send: FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>,
+    val navigation: FunPtr<(Ptr<Unit>?, Int) -> Int>
+) {
+    private val doc = CodeDocument("alpha beta\n\t中x\n\t中文\n" + "row\n".repeat(80L))
+    private val editor = CodeEditorState(doc)
+    private var window: Window? = None
+    private var stage = 0
+    private var queued = false
+    private var firstEnd = 0L
+    private var outside = Point(0.0, 0.0)
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(15L)
+    var finished = false
+
+    private fun point(line: Long, column: Long): Point {
+        val r = editor.caretRect(TextPosition(doc.offsetAt(CodePosition(line, column))))!!
+        return Point(r.x, r.y + r.height / 2.0)
+    }
+    private fun mouse(phase: Int, p: Point, count: Int, rect: Boolean = false) {
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                when (lease.handle) {
+                    case AppKit(_, val view) ->
+                        send(view, phase, p.x, p.y, count, if (rect) 1 else 0)
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+    private fun navigate(phase: Int): Boolean {
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                return when (lease.handle) {
+                    case AppKit(_, val view) -> navigation(Some(view), phase) == 1
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+    private fun gesture(from: Point, to: Point, count: Int, rect: Boolean = false) {
+        mouse(0, from, count, rect)
+        mouse(1, to, count, rect)
+        mouse(2, to, count, rect)
+    }
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Editor native pointer";
+                            size = LogicalSize(300.0, 130.0)
+                        }
+                    )
+                window = Some(w)
+                host.attach(w, { scope -> PointerEditor(editor, scope) })
+                w.requestFocus()
+                app
+                    .setControlFlow(
+                        ControlFlow
+                            .WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(30L))
+                    )
+            }
+
+            case NewEvents(StartCause.Deadline) -> {
+                if (MonotonicTimeSource.now() >= deadline)
+                    fail(
+                        Some(
+                            f"pointer stage ${stage}, scroll ${editor.scroll.offset.y}, selection ${
+                                editor.selections.primary.range.end
+                            }"
+                        )
+                    )
+                app
+                    .setControlFlow(
+                        ControlFlow
+                            .WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(30L))
+                    )
+            }
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                val frame = ink.currentFrame() ?: return
+                if (queued || finished || window?.isFocused != Some(true)) return
+                if (stage ==
+                    4 &&
+                    (
+                        editor.scroll.offset.y <
+                            80.0 ||
+                            doc.positionAt(editor.selections.primary.range.end).line <=
+                            firstEnd
+                    )
+                )
+                    return
+                queued = true
+                app
+                    .proxy()
+                    .post { app ->
+                        queued = false
+                        when (stage) {
+                            case 0 -> gesture(point(0L, 2L), point(0L, 8L), 2)
+
+                            case 1 -> {
+                                assertEquals("alpha beta", editor.selectedText());
+                                gesture(point(0L, 2L), point(1L, 1L), 3)
+                            }
+
+                            case 2 -> {
+                                assertEquals(
+                                    doc.read(Utf8Range(0L, doc.lineRange(1L, true).end)),
+                                    editor.selectedText()
+                                );
+                                gesture(point(1L, 1L), point(2L, 4L), 1, true)
+                            }
+
+                            case 3 -> {
+                                assertEquals("中\n中", editor.selectedText())
+                                val begin = point(0L, 1L)
+                                outside = Point(begin.x, frame.size.height + 36.0)
+                                mouse(0, begin, 1)
+                                mouse(1, outside, 1)
+                                firstEnd = doc.positionAt(editor.selections.primary.range.end).line
+                            }
+
+                            case 4 -> mouse(2, outside, 1)
+
+                            case 5 -> {
+                                assertTrue(ink.drag?.unit == None && !ink.dragScroll.isScheduled)
+                                assertTrue(editor.runAction("navigation.goToLine"))
+                            }
+
+                            case 6 -> {
+                                if (editor.hasFocus || !navigate(0)) return@post
+                            }
+
+                            case 7 -> {
+                                if (!navigate(1)) return@post
+                                navigate(2)
+                            }
+
+                            case 8 -> {
+                                if (!editor.hasFocus || editor.widgets.size > 0L) return@post
+                                assertEquals(
+                                    CodePosition(16L, 1L),
+                                    doc.positionAt(editor.selections.primary.cursor.byteOffset)
+                                )
+                                assertTrue(editor.runAction("navigation.goToLine"))
+                            }
+
+                            case 9 -> {
+                                if (editor.hasFocus || editor.widgets.size == 0L) return@post
+                                navigate(3)
+                            }
+
+                            case 10 -> {
+                                if (!editor.hasFocus || editor.widgets.size > 0L) return@post
+                                assertEquals(
+                                    CodePosition(16L, 1L),
+                                    doc.positionAt(editor.selections.primary.cursor.byteOffset)
+                                )
+                                finished = true
+                                app.requestExit()
+                            }
+
+                            else -> {}
+                        }
+                        stage += 1
+                    }
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class PointerEditor(val editor: CodeEditorState, scope: ComponentScope) : Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

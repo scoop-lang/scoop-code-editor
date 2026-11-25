@@ -6,6 +6,10 @@ import scoop.graphics.text.TextPosition
 import scoop.ui.*
 import scoop.ui.component.ItemExtentIndex
 import scoop.ui.component.nativeContextMenu
+import scoop.ui.style.Theme
+import scoop.ui.style.ThemeSource
+import scoop.ui.style.read
+import scoop.ui.style.shadcn.shadcnTheme
 
 internal class WidgetLayout(
     val ink: EditorInk,
@@ -109,10 +113,20 @@ internal class WidgetLayout(
     }
 }
 
-internal class EditorContents(val state: CodeEditorState, val widgets: Array<EditorWidget>)
+internal class EditorContents(
+    val state: CodeEditorState,
+    val widgets: Array<EditorWidget>,
+    val theme: Theme,
+    val themes: ThemeSource
+)
+
+internal fun CodeEditorState.uiTheme(): ThemeSource = mounted?.contents?.themes ?:
+    contextOrNone<ThemeSource>() ?:
+    ThemeSource(shadcnTheme())
 
 internal class EditorComponent(val input: Props<CodeEditorState>, scope: ComponentScope) :
     Component(scope) {
+    private val themes = contextOrNone<ThemeSource>() ?: ThemeSource(shadcnTheme())
     public override fun render(): View {
         val state = input.value
         val widgets = state.widgetList.value
@@ -121,7 +135,7 @@ internal class EditorComponent(val input: Props<CodeEditorState>, scope: Compone
             element({ mount -> WidgetSlot(mount) }, [widget.view], ViewKey.Number(widget.id))
         }
         val body = element(
-            EditorContents(state, widgets),
+            EditorContents(state, widgets, themes.read(scope), themes),
             { props, mount -> EditorInk(props, mount) },
             children
         )

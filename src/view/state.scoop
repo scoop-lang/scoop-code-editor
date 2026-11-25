@@ -14,6 +14,9 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     internal val actions = ArrayList<EditorAction>()
     internal val menuRevision = state(0L)
     internal var focusAfterLayout = false
+    internal var gotoPanel: Closeable? = None
+    internal var pendingReading: ReadingAnchor? = None
+    internal var centerReveal = false
     internal var menuStatus = -1
     internal var activeFind: CodeFind? = None
     public val find: CodeFind get() = activeFind ?: CodeFind(this)
@@ -57,9 +60,27 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         val local = ink.clippedCaret(frame, frame.displayPosition(position)) ?: return None
         return ink.area.toWindow(local)
     }
-    public fun revealRange(range: Utf8Range) {
+    private fun endIsVisible(range: Utf8Range): Boolean {
+        val ink = mounted ?: return false
+        val frame = ink.currentFrame() ?: return false
+        val r = frame.displayCaret(frame.displayPosition(TextPosition(range.end))) ?: return false
+        return r.x >=
+            frame.gutter &&
+            r.x +
+            r.width <=
+            frame.size.width -
+            4.0 &&
+            r.y >=
+            0.0 &&
+            r.y +
+            r.height <=
+            frame.size.height
+    }
+    public fun revealRange(range: Utf8Range, center: Boolean = false) {
         if (!validRange(document.root, range))
             throw IllegalArgumentException(Some("invalid reveal range"))
+        if (!center && reveal == None && endIsVisible(range)) return
+        centerReveal = center
         reveal = Some(range)
         when (mounted) {
             case Some(val ink) -> {
@@ -78,6 +99,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         installNativeActions()
         installLineActions()
         installFindActions()
+        installViewActions()
     }
 
     public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents
@@ -120,6 +142,8 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         document.detach(this)
         mounted?.stateClosed()
         activeFind?.close()
+        gotoPanel?.close()
+        gotoPanel = None
         actions.clear()
         decorationStore.close()
         widgets.clear()

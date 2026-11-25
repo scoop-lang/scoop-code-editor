@@ -1,0 +1,184 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+@Test
+private class ViewportCommandTests {
+    @Test
+    fun expandingLinesAndRestoringDirectedSelectionsUsesDocumentCoordinates() {
+        val e = CodeEditorState(CodeDocument("a中\r\nbb\nxyz"))
+        assertTrue(e.goToUserLocation("1:3"))
+        assertEquals(4L, e.selections.primary.cursor.byteOffset)
+        assertFalse(e.goToUserLocation("7:1"))
+        e.setSelections([CodeSelection.offsets(4L, 1L), CodeSelection.caret(7L)], 1L)
+        val saved = e.saveViewState()
+        e.runAction("selection.lineEnds")
+        assertEquals(4L, e.selections.values[0L].cursor.byteOffset)
+        assertEquals(8L, e.selections.primary.cursor.byteOffset)
+        e.restoreViewState(saved)
+        assertEquals(2L, e.selections.values.size)
+        assertFalse(e.selections.values[0L].forward)
+        assertEquals(1L, e.selections.primaryIndex)
+        e.setSelections([CodeSelection.caret(1L)])
+        e.runAction("selection.expandLine")
+        assertEquals("a中\r\n", e.selectedText())
+        e.runAction("selection.expandLine")
+        assertEquals("a中\r\nbb\n", e.selectedText())
+        e.close()
+    }
+
+    @Test(useProcess = true)
+    fun columnSelectionMultiCursorHistoryAndViewportActionsUseShapedRows() {
+        val p = ViewportCommandProbe()
+        UiHost(
+            onRootError = { _, error -> throw error },
+            handler = { host, app, event -> p.event(host, app, event) }
+        )
+            .use { h -> Application().run(h) }
+        assertTrue(p.finished)
+    }
+}
+
+private class ViewportCommandProbe {
+    val doc = CodeDocument("\t中x!\n\t中文!\n\tx!\nrows\nrows\nrows\n" + "tail\n".repeat(110L))
+    val editor = CodeEditorState(doc)
+    private val end = MonotonicTimeSource.now() + Duration.seconds(18L)
+    private var stage = 0
+    private var queued = false
+    private var saved: CodeViewState? = None
+    var finished = false
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val native = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Editor columns and reading position";
+                            size = LogicalSize(340.0, 140.0)
+                        }
+                    )
+                host.attach(native, { scope -> ViewportCommandRoot(editor, scope) })
+                native.requestFocus()
+                app.setControlFlow(ControlFlow.WaitUntil(end))
+            }
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                val frame = ink.currentFrame() ?: return
+                if (queued || finished || frame.document.version != doc.version) return
+                queued = true
+                app
+                    .proxy()
+                    .post { a ->
+                        queued = false;
+                        advance(a)
+                    }
+            }
+
+            case NewEvents(StartCause.Deadline) ->
+                fail(Some(f"viewport command stopped at stage ${stage}"))
+            else -> {}
+        }
+    }
+    private fun advance(app: ActiveApplication) {
+        val ink = editor.mounted!!
+        val frame = ink.currentFrame() ?: return
+        when (stage) {
+            case 0 -> {
+                editor.setSelections([CodeSelection.caret(1L)])
+                assertTrue(editor.runAction("selection.columnRight"))
+            }
+
+            case 1 -> assertTrue(editor.runAction("selection.columnDown"))
+
+            case 2 -> {
+                assertEquals(2L, editor.selections.values.size)
+                assertEquals("中", doc.read(editor.selections.values[0L].range))
+                assertEquals("中", doc.read(editor.selections.values[1L].range))
+                editor.pasteContent(CodeClipboardContent(["A", "B"]))
+                assertEquals("\tAx!", doc.read(doc.lineRange(0L)))
+                assertEquals("\tB文!", doc.read(doc.lineRange(1L)))
+                editor.undo()
+                assertEquals("中\n中", editor.selectedText())
+                editor.goTo(CodePosition(3L, 1L))
+            }
+
+            case 3 -> {
+                assertTrue(editor.runAction("selection.addNextMatch"))
+                assertTrue(editor.runAction("selection.addNextMatch"))
+                assertEquals(2L, editor.selections.values.size)
+            }
+
+            case 4 -> {
+                assertTrue(editor.runAction("cursor.addBelow"))
+                assertEquals(3L, editor.selections.values.size)
+                editor.replaceSelections("Ω")
+                for (line in 3L..<6L)
+                    assertEquals("Ω", doc.read(doc.lineRange(line)))
+                editor.undo()
+                assertEquals("rows\nrows\nrows", editor.selectedText())
+                editor.redo()
+                for (line in 3L..<6L)
+                    assertEquals("Ω", doc.read(doc.lineRange(line)))
+                editor.goTo(CodePosition(80L, 1L))
+            }
+
+            case 5 -> {
+                assertTrue(editor.runAction("navigation.center"))
+            }
+
+            case 6 -> {
+                val rect = editor.caretRect(editor.selections.primary.cursor)!!
+                assertTrue(
+                    rect.y +
+                        rect.height /
+                        2.0 >
+                        frame.size.height *
+                        0.35 &&
+                        rect.y <
+                        frame.size.height *
+                        0.65
+                )
+                saved = Some(editor.saveViewState())
+                assertTrue(editor.runAction("scroll.pageDown"))
+            }
+
+            case 7 -> {
+                assertTrue(editor.scroll.offset.y > saved!!.scrollOffset.y)
+                assertEquals(80L, doc.positionAt(editor.selections.primary.cursor.byteOffset).line)
+                editor.goTo(CodePosition(0L, 0L))
+            }
+
+            case 8 -> editor.restoreViewState(saved!!)
+
+            case 9 -> {
+                assertEquals(80L, doc.positionAt(editor.selections.primary.cursor.byteOffset).line)
+                assertTrue(editor.caretRect(editor.selections.primary.cursor) != None)
+                val reading = saved!!
+                val pos = TextPosition(doc.offsetAt(reading.first!!), reading.affinity)
+                val rect = frame.displayCaret(frame.displayPosition(pos))!!
+                assertTrue(
+                    rect.y >= reading.pixelY - 1.0 && rect.y <= reading.pixelY + 1.0,
+                    Some(f"reading anchor was at ${reading.pixelY}, restored at ${rect.y}")
+                )
+                finished = true
+                app.requestExit()
+            }
+
+            else -> {}
+        }
+        stage += 1
+    }
+}
+
+private class ViewportCommandRoot(val editor: CodeEditorState, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

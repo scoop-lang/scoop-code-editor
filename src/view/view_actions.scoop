@@ -1,0 +1,101 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.ui.*
+import scoop.window.*
+
+private fun CodeEditorState.scrollStep(pages: Boolean, down: Boolean) {
+    val ink = mounted ?: return
+    val frame = ink.currentFrame() ?: return
+    val pos = frame.hit(Point(frame.gutter + 1.0, 0.0))
+    val rect = when (pos) {
+        case Some(val p) -> frame.displayCaret(frame.displayPosition(p));
+        case None -> None
+    }
+    val distance = if (pages)
+        scroll.viewport.height
+    else
+        rect?.height ?: options.text.fontSize * 1.45
+    scroll.scrollBy(Point(0.0, if (down) distance else -distance), ScrollOrigin.User)
+}
+
+internal fun CodeEditorState.installViewActions() {
+    val vertical = ShortcutModifiers(primary = true, alt = true)
+    val box = ShortcutModifiers(primary = true, alt = true, shift = true)
+    val ready: (CodeEditorState) -> Boolean = { e -> e.hasLayout() }
+    addAction(
+        "cursor.addAbove",
+        "Add cursor above",
+        namedShortcut(NamedKey.ArrowUp, vertical),
+        ready
+    ) { e -> e.mounted!!.addVertical(false) }
+    addAction(
+        "cursor.addBelow",
+        "Add cursor below",
+        namedShortcut(NamedKey.ArrowDown, vertical),
+        ready
+    ) { e -> e.mounted!!.addVertical(true) }
+    addAction(
+        "selection.expandLine",
+        "Expand line selection",
+        characterShortcut("l", ShortcutModifiers(primary = true))
+    ) { e -> e.expandLineSelection() }
+    addAction("selection.lineEnds", "Add cursors at line ends") { e -> e.addCursorsAtLineEnds() }
+    addAction(
+        "selection.columnLeft",
+        "Extend column selection left",
+        namedShortcut(NamedKey.ArrowLeft, box),
+        ready
+    ) { e -> e.mounted!!.columnStep(TextMovement.Left) }
+    addAction(
+        "selection.columnRight",
+        "Extend column selection right",
+        namedShortcut(NamedKey.ArrowRight, box),
+        ready
+    ) { e -> e.mounted!!.columnStep(TextMovement.Right) }
+    addAction(
+        "selection.columnUp",
+        "Extend column selection upward",
+        namedShortcut(NamedKey.ArrowUp, box),
+        ready
+    ) { e -> e.mounted!!.columnStep(TextMovement.Up) }
+    addAction(
+        "selection.columnDown",
+        "Extend column selection downward",
+        namedShortcut(NamedKey.ArrowDown, box),
+        ready
+    ) { e -> e.mounted!!.columnStep(TextMovement.Down) }
+    addAction("scroll.lineUp", "Scroll up one line", enabled = ready) { e ->
+        e.scrollStep(false, false)
+    }
+    addAction("scroll.lineDown", "Scroll down one line", enabled = ready) { e ->
+        e.scrollStep(false, true)
+    }
+    addAction("scroll.pageUp", "Scroll up one page", enabled = ready) { e ->
+        e.scrollStep(true, false)
+    }
+    addAction("scroll.pageDown", "Scroll down one page", enabled = ready) { e ->
+        e.scrollStep(true, true)
+    }
+    addAction("navigation.center", "Center cursor in viewport", enabled = ready) { e ->
+        e.revealRange(e.selections.primary.range, true)
+    }
+    addAction(
+        "navigation.goToLine",
+        "Go to line and column",
+        characterShortcut("g", ShortcutModifiers(control = true)),
+        ready
+    ) { e ->
+        when (e.gotoPanel) {
+            case Some(_) -> {};
+            case None ->
+                e.gotoPanel = Some(
+                    e
+                        .addOverlayWidget(
+                            CodeEditorCorner.TopRight,
+                            component({ scope -> GoToPanel(e, scope) })
+                        )
+                )
+        }
+    }
+}

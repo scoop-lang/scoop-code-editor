@@ -15,7 +15,7 @@ static id editorField(id parent, NSString *value) {
     return nil;
 }
 
-int scoop_editor_appkit_measure(void *rawView, int step) {
+static int measureEditor(void *rawView, int step) {
     if (step == 0) {
         struct rusage usage;
         return getrusage(RUSAGE_SELF, &usage) == 0 ? (int)(usage.ru_maxrss / 1024) : -1;
@@ -38,7 +38,7 @@ int scoop_editor_appkit_measure(void *rawView, int step) {
 }
 
 // Run on the window owner thread using AppKit client methods.
-int scoop_editor_appkit_probe(void *rawView, int step) {
+static int probeEditor(void *rawView, int step) {
     NSView<NSTextInputClient> *view = (__bridge NSView<NSTextInputClient> *)rawView;
     NSRange actual = NSMakeRange(NSNotFound, 0);
     if (step == 0) {
@@ -88,3 +88,59 @@ int scoop_editor_appkit_probe(void *rawView, int step) {
     if (step == 6) return view.hasMarkedText && [line.string isEqualToString:@"a草a"] ? 0 : 13;
     return step == 8 && !view.hasMarkedText && [line.string isEqualToString:@"aXa"] ? 0 : 14;
 }
+
+static void sendEditorMouse(void *rawView, int phase, double x, double y,
+                              int count, int rectangle) {
+    NSView *view = (__bridge NSView *)rawView;
+    NSEventType type = phase == 0 ? NSEventTypeLeftMouseDown :
+                       phase == 1 ? NSEventTypeLeftMouseDragged : NSEventTypeLeftMouseUp;
+    NSPoint point = [view convertPoint:NSMakePoint(x, y) toView:nil];
+    NSEventModifierFlags flags = rectangle ? NSEventModifierFlagOption | NSEventModifierFlagShift : 0;
+    NSEvent *event = [NSEvent mouseEventWithType:type location:point modifierFlags:flags
+                                      timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:view.window.windowNumber context:nil
+                                    eventNumber:1 clickCount:count pressure:phase == 2 ? 0.0 : 1.0];
+    if (phase == 0) [view mouseDown:event];
+    else if (phase == 1) [view mouseDragged:event];
+    else [view mouseUp:event];
+}
+
+static int driveNavigation(void *rawView, int phase) {
+    NSView<NSTextInputClient> *view = (__bridge NSView<NSTextInputClient> *)rawView;
+    NSRange actual = NSMakeRange(NSNotFound, 0);
+    if (phase == 0) {
+        NSUInteger digits = 0;
+        while (true) {
+            NSAttributedString *one = [view attributedSubstringForProposedRange:NSMakeRange(digits, 1)
+                                                                    actualRange:&actual];
+            if (!one.length) break;
+            if (![NSCharacterSet.decimalDigitCharacterSet characterIsMember:[one.string characterAtIndex:0]])
+                return 0;
+            digits++;
+        }
+        if (!digits) return 0;
+        [view insertText:@"17:2" replacementRange:NSMakeRange(0, digits)];
+        return 1;
+    }
+    if (phase == 1) {
+        NSAttributedString *text = [view attributedSubstringForProposedRange:NSMakeRange(0, 4)
+                                                                 actualRange:&actual];
+        return [text.string isEqualToString:@"17:2"];
+    }
+    NSString *key = phase == 2 ? @"\r" : @"\033";
+    unsigned short code = phase == 2 ? 36 : 53;
+    for (NSNumber *type in @[@(NSEventTypeKeyDown), @(NSEventTypeKeyUp)]) {
+        NSEvent *event = [NSEvent keyEventWithType:type.unsignedIntegerValue location:NSZeroPoint
+                                     modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                      windowNumber:view.window.windowNumber context:nil characters:key
+                       charactersIgnoringModifiers:key isARepeat:NO keyCode:code];
+        [view.window sendEvent:event];
+    }
+    return 1;
+}
+
+// Export typed function pointers as data so that dlsym has one declaration in Scoop.
+int (*const scoop_editor_appkit_navigation)(void *, int) = driveNavigation;
+int (*const scoop_editor_appkit_measure)(void *, int) = measureEditor;
+int (*const scoop_editor_appkit_probe)(void *, int) = probeEditor;
+void (*const scoop_editor_appkit_mouse)(void *, int, double, double, int, int) = sendEditorMouse;

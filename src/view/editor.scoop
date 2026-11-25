@@ -6,6 +6,8 @@ import scoop.platform.time.MonotonicTimeSource
 import scoop.surface.*
 import scoop.time.Duration
 import scoop.ui.*
+import scoop.ui.component.ViewportScrollbars
+import scoop.ui.component.ViewportScrollbarOptions
 import scoop.window.*
 import scoop.window.accessibility.*
 
@@ -30,12 +32,20 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
         .createArea(focusable = true, textInput = !editor.readOnly) { c, e -> event(c, e) }
     internal val focus = scope.focusTarget(area)
     internal val semantics = scope.semantics(SemanticRole.TextField)
+    private fun scrollbarOptions(): ViewportScrollbarOptions = ViewportScrollbarOptions(
+        contents.theme, if (editor.options.softWrap) ScrollAxes.Vertical else ScrollAxes.Both,
+        visibility = editor.options.scrollbars, lineStep = editor.options.text.fontSize * 1.45
+    )
+    private var barOptions = scrollbarOptions()
+    internal val bars = ViewportScrollbars(scope, viewport, area, Some(semantics)) { barOptions }
     internal val layoutEngine = CodeLayout(this)
     internal var accepted: EditorFrame? = None
     internal var connection: TextInputConnection? = None
     internal var retiring = false
     internal var projectionChanged = false
-    internal var dragging = false
+    internal var drag: EditorDrag? = None
+    internal var column: EditorColumn? = None
+    internal val dragScroll = scope.createDeadline { scrollDrag() }
     internal var preferredX: Array<Double?> = []
     internal var caretVisible = true
     internal var semanticVersion = -1L
@@ -72,6 +82,8 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
         if (editor.closed || (editor.mounted?.ended == Some(false)))
             throw IllegalStateException(Some("editor state is closed or already mounted"))
         editor.mounted = Some(this)
+        layoutEngine.anchor = editor.pendingReading
+        editor.pendingReading = None
         updateShortcuts()
         change = Some(
             editor
@@ -130,6 +142,8 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
     internal fun settingsChanged() {
         if (ended) return
         area.textInput = !editor.readOnly
+        barOptions = scrollbarOptions()
+        bars.update()
         refreshInput()
         syncSemantics()
         scope.requestLayout()
@@ -207,6 +221,8 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
             ended = false
             bind()
         }
+        barOptions = scrollbarOptions()
+        bars.update()
         return UiInvalidation.Layout
     }
 
@@ -230,6 +246,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                 children.clipRect(bounds);
                 children.children()
             }
+        bars.scene(context, frame.scroll)
         val retained = frame.retain()
         val owner = editor
         val pending = editor.reveal
@@ -246,6 +263,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                     accepted?.release()
                     accepted = Some(retained)
                     owner.refreshMenuStatus()
+                    continueDragAfterFrame()
                     if (owner.focusAfterLayout) {
                         owner.focusAfterLayout = false
                         scope
@@ -283,7 +301,8 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
     }
     private fun unbind() {
         ended = true
-        dragging = false
+        finishDrag()
+        column = None
         blink.cancel()
         if (scope.isMounted && connection != None && !area.isClosed) area.restartTextInput()
         connection = None

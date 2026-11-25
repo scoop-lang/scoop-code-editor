@@ -224,7 +224,9 @@ internal class CodeLayout(val ink: EditorInk) {
                             .caret(body.display(local))
                         val top = index.prefix(line) + (caret?.y ?: 0.0)
                         val bottom = top + (caret?.height ?: h)
-                        if (top < y)
+                        if (state.centerReveal)
+                            y = (top + bottom - size.height) / 2.0
+                        else if (top < y)
                             y = top
                         else if (bottom > y + size.height) y = bottom - size.height
                         val edge = caret?.x ?: 0.0
@@ -245,7 +247,7 @@ internal class CodeLayout(val ink: EditorInk) {
 
                 case None -> {}
             }
-            var offered = ink.viewport.layout(size, Size(maximumWidth, index.total), adjustment)
+            var offered = ink.bars.layout(size, Size(maximumWidth, index.total), adjustment)
             y = offered.presentationOffset.y
             var line = index.indexAt(if (y > 0.0) y else 0.0)
             if (line > 0L) line -= 1L
@@ -284,7 +286,7 @@ internal class CodeLayout(val ink: EditorInk) {
                 )
             }
             offered = ink
-                .viewport
+                .bars
                 .layout(
                     size,
                     Size(if (opt.softWrap) size.width else maximumWidth, index.total),

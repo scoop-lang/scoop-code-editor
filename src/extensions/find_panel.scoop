@@ -13,13 +13,19 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
     private val replacementField = TextEditorState(find.replacement)
     private val searchFocus = FocusHandle()
     public override fun onMount() {
+        scope
+            .panelEscape(
+                { queryField.markedRange == None && replacementField.markedRange == None }
+            ) { find.closePanel() }
         scope.application.proxy().post { _ -> if (scope.isMounted) searchFocus.requestFocus() }
     }
     public override fun render(): View {
         val search = find
+        val source = Some(search.editor.uiTheme())
         search.displayRevision.value
         val focus = searchFocus
         val query = input(queryField) {
+            theme = source
             label = "Find";
             placeholder = "Find";
             this.focus = FocusOptions(handle = Some(focus))
@@ -27,6 +33,7 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
             onSubmit = { _ -> search.editor.runAction("find.next") }
         }
         val replacement = input(replacementField) {
+            theme = source
             label = "Replace";
             placeholder = "Replace"
             onEdited = { field -> search.replacement = field.text }
@@ -37,32 +44,32 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
             button(
                 if (opts.matchCase) "Aa ✓" else "Aa",
                 { search.options = CodeFindOptions(!opts.matchCase, opts.wholeWord, opts.regex) }
-            )
+            ) { theme = source }
             button(
                 if (opts.wholeWord) "Word ✓" else "Word",
                 { search.options = CodeFindOptions(opts.matchCase, !opts.wholeWord, opts.regex) }
-            )
+            ) { theme = source }
             button(
                 if (opts.regex) "Regex ✓" else "Regex",
                 { search.options = CodeFindOptions(opts.matchCase, opts.wholeWord, !opts.regex) }
-            )
+            ) { theme = source }
             button(
                 if (search.inSelection) "Selection ✓" else "Selection",
                 { search.restrictToSelections(!search.inSelection) }
-            )
+            ) { theme = source }
         }
         val navigation = row {
             label(
                 search.error ?:
                     (search.currentMatch.toString() + " / " + search.matchCount.toString())
-            )
-            button("Previous", { search.previous() })
-            button("Next", { search.next() })
+            ) { theme = source }
+            button("Previous", { search.previous() }) { theme = source }
+            button("Next", { search.next() }) { theme = source }
         }
         val actions = row {
-            button("Replace", { search.editor.runAction("find.replace") })
-            button("Replace all", { search.editor.runAction("find.replaceAll") })
-            button("Close", { search.closePanel() })
+            button("Replace", { search.editor.runAction("find.replace") }) { theme = source }
+            button("Replace all", { search.editor.runAction("find.replaceAll") }) { theme = source }
+            button("Close", { search.closePanel() }) { theme = source }
         }
         return column {
             item(query);
@@ -74,6 +81,11 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
     }
 }
 
+private fun noteButton(editor: CodeEditorState, open: () -> Unit): View {
+    val source = Some(editor.uiTheme())
+    return button("Note", open) { theme = source }
+}
+
 /** One anchored hint and an expandable measured annotation, owned by the caller. */
 public class CodeLineNote public constructor(
     private val editor: CodeEditorState,
@@ -82,7 +94,8 @@ public class CodeLineNote public constructor(
 ) : Closeable {
     private val marker = editor.decorations()
     private var anchor = editor.document.lineRange(line).end
-    private val hint = editor.addContentWidget(anchor, button("Note", { toggle() }))
+    private val hint = editor
+        .addContentWidget(anchor, noteButton(editor) { toggle() })
     private val watch = editor
         .document
         .onChange { e -> anchor = e.mapping.map(anchor, CodeStickiness.Before) }
@@ -93,9 +106,14 @@ public class CodeLineNote public constructor(
         get() = open
         set(value) {
             if (closed || value == open) return
+            val source = Some(editor.uiTheme())
             if (value)
                 zone = Some(
-                    editor.addViewZone(editor.document.positionAt(anchor).line, label(message))
+                    editor
+                        .addViewZone(
+                            editor.document.positionAt(anchor).line,
+                            label(message) { theme = source }
+                        )
                 )
             else {
                 zone?.close();

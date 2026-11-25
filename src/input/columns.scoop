@@ -1,0 +1,187 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.window.*
+
+internal class EditorColumn(
+    val anchor: TextPosition,
+    val startX: Double,
+    var cursor: TextPosition,
+    var x: Double
+) {
+    var applied: CodeSelections? = None
+}
+
+private fun ScreenRow.visualIndex(pos: TextPosition): Long {
+    val layout = ink.layout
+    val caret = layout.caret(display(pos)) ?: return 0L
+    val y = caret.y + caret.height / 2.0
+    for (i in 0L..<layout.lines.size) {
+        val r = layout.lines[i].rect
+        if (y < r.y + r.height) return i
+    }
+    return layout.lines.size - 1L
+}
+
+internal fun EditorInk.columnX(pos: TextPosition, frame: EditorFrame): Double = withLine(
+    editor.document.positionAt(pos.byteOffset).line,
+    frame
+) { row -> row.ink.layout.caret(row.display(pos))?.x ?: 0.0 }
+
+internal fun EditorInk.selectColumn(c: EditorColumn, frame: EditorFrame) {
+    val doc = editor.document
+    val aLine = doc.positionAt(c.anchor.byteOffset).line
+    val bLine = doc.positionAt(c.cursor.byteOffset).line
+    val first = if (aLine <= bLine) aLine else bLine
+    val last = if (aLine <= bLine) bLine else aLine
+    val values = ArrayList<CodeSelection>()
+    var primary = 0L
+    for (line in first..<last + 1L) {
+        val startIndex = values.size
+        val active = withLine(line, frame) { row ->
+            val rows = row.ink.layout.lines
+            val a = if (line == aLine)
+                row.visualIndex(c.anchor)
+            else if (line < aLine) rows.size - 1L else 0L
+            val b = if (line == bLine)
+                row.visualIndex(c.cursor)
+            else if (line < bLine) rows.size - 1L else 0L
+            val low = if (a < b) a else b
+            val high = if (a < b) b else a
+            for (i in low..<high + 1L) {
+                val r = rows[i].rect
+                val y = r.y + r.height / 2.0
+                val left = row.source(row.ink.layout.hitTest(Point(c.startX, y)))
+                val right = row.source(row.ink.layout.hitTest(Point(c.x, y)))
+                values.add(CodeSelection(left, right))
+            }
+            if (line == bLine) startIndex + b - low else -1L
+        }
+        if (active >= 0L) primary = active
+    }
+    if (values.size == 0L) return
+    editor.setSelections(values, primary)
+    c.applied = Some(editor.selections)
+    column = Some(c)
+}
+
+internal fun EditorInk.columnStep(direction: TextMovement) {
+    val frame = currentFrame() ?: return
+    val s = editor.selections.primary
+    val saved = column
+    val c = when (saved) {
+        case Some(val previous) ->
+            when (val selected = previous.applied) {
+                case Some(val old) -> if (old === editor.selections) Some(previous) else None
+                case None -> None
+            }
+        case None -> None
+    } ?:
+        EditorColumn(s.anchor, columnX(s.anchor, frame), s.cursor, columnX(s.cursor, frame))
+    if (direction == TextMovement.Left || direction == TextMovement.Right) {
+        val line = editor.document.positionAt(c.cursor.byteOffset).line
+        withLine(line, frame) { row ->
+            val pos = row.display(c.cursor)
+            val layout = row.ink.layout
+            val oldX = layout.caret(pos)?.x ?: 0.0
+            val target = layout
+                .moveCaret(
+                    pos,
+                    if (direction == TextMovement.Left) CaretMovement.Left else CaretMovement.Right
+                )
+                ?.position ?:
+                pos
+            val r = layout.caret(target)
+            val next = row.source(target)
+            if (c.x >
+                oldX +
+                0.5 ||
+                r ==
+                None ||
+                next ==
+                c.cursor ||
+                row.visualIndex(next) !=
+                row.visualIndex(c.cursor)
+            ) {
+                val advance = Paragraph(scope.defaultFonts, " ", editor.options.text)
+                    .use { paragraph ->
+                        paragraph.layoutUnwrapped().use { space -> space.size.width }
+                    }
+                val x = c.x + if (direction == TextMovement.Left) -advance else advance
+                c.x = if (x > 0.0) x else 0.0
+                c.cursor = row
+                    .source(
+                        layout
+                            .hitTest(
+                                Point(
+                                    c.x,
+                                    (layout.caret(pos)?.y ?: 0.0) +
+                                        (layout.caret(pos)?.height ?: 1.0) /
+                                        2.0
+                                )
+                            )
+                    )
+            } else {
+                c.cursor = next;
+                c.x = r!!.x
+            }
+        }
+    } else
+        c.cursor = destination(c.cursor, direction, Some(c.x), frame)
+    selectColumn(c, frame)
+    editor.revealRange(editor.selections.primary.range)
+}
+
+internal fun EditorInk.addVertical(below: Boolean) {
+    val frame = currentFrame() ?: return
+    val old = editor.selections
+    val out = ArrayList<CodeSelection>()
+    for (s in old.values)
+        out.add(s)
+    for (s in old.values) {
+        val motion = if (below) TextMovement.Down else TextMovement.Up
+        val a = destination(s.anchor, motion, Some(columnX(s.anchor, frame)), frame)
+        val b = destination(s.cursor, motion, Some(columnX(s.cursor, frame)), frame)
+        out.add(CodeSelection(a, b))
+    }
+    editor.setSelections(out, old.values.size + old.primaryIndex)
+    editor.revealRange(editor.selections.primary.range)
+}
+
+public fun CodeEditorState.addCursorsAtLineEnds() {
+    val out = ArrayList<CodeSelection>()
+    val mainLine = document.positionAt(selections.primary.cursor.byteOffset).line
+    var primary = 0L
+    for (block in selectedLines())
+        for (line in block.first..<block.last + 1L) {
+            if (line <= mainLine) primary = out.size
+            out.add(CodeSelection.caret(document.lineRange(line).end))
+        }
+    setSelections(out, primary)
+}
+
+public fun CodeEditorState.expandLineSelection() {
+    val before = selections
+    val lines = Array<CodeSelection>(before.values.size) { i ->
+        val s = before.values[i]
+        val first = document.positionAt(s.range.start).line
+        val last = document.positionAt(s.range.end).line
+        val a = document.lineRange(first).start
+        var b = document.lineRange(last, true).end
+        if (s.range.end >
+            s.range.start &&
+            s.range.end ==
+            document.lineRange(last).start &&
+            s.range.start !=
+            a
+        )
+            b = s.range.end
+        if (s.anchor.byteOffset > s.cursor.byteOffset)
+            CodeSelection.offsets(b, a)
+        else
+            CodeSelection.offsets(a, b)
+    }
+    setSelections(lines, before.primaryIndex)
+    revealRange(selections.primary.range)
+}

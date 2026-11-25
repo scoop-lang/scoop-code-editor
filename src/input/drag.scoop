@@ -1,0 +1,162 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.time.Duration
+import scoop.ui.ScrollOrigin
+import scoop.window.*
+
+internal enum SelectionUnit {
+    Character, Word, Line, Column
+}
+
+internal class EditorDrag(
+    val unit: SelectionUnit,
+    val anchor: CodeSelection,
+    var point: Point,
+    val column: EditorColumn?
+)
+
+private fun clampCoordinate(value: Double, upper: Double): Double = if (value < 0.0 || upper < 0.0)
+    0.0
+else if (value > upper) upper else value
+
+private fun EditorInk.pointerUnit(
+    at: TextPosition,
+    unit: SelectionUnit,
+    frame: EditorFrame
+): CodeSelection {
+    if (unit == SelectionUnit.Line) {
+        val r = editor.document.lineRange(editor.document.positionAt(at.byteOffset).line, true)
+        return CodeSelection.offsets(r.start, r.end)
+    }
+    if (unit == SelectionUnit.Word) {
+        val pos = frame.displayPosition(at)
+        val row = frame.rowAt(pos) ?: return CodeSelection(at, at)
+        val r = row.ink.layout.wordRange(row.display(pos))
+        return CodeSelection(
+            frame.original(row.source(TextPosition(r.start))),
+            frame.original(row.source(TextPosition(r.end)))
+        )
+    }
+    return CodeSelection(at, at)
+}
+
+internal fun EditorInk.beginDrag(point: Point, count: Long, mods: Modifiers) {
+    val frame = currentFrame() ?: return
+    val hit = frame.hit(point) ?: return
+    area.requestFocus(FocusOrigin.Pointer)
+    preferredX = []
+    val old = editor.selections
+    val unit = if (mods.alt && mods.shift)
+        SelectionUnit.Column
+    else if (count >= 3L || point.x < frame.gutter)
+        SelectionUnit.Line
+    else if (count == 2L) SelectionUnit.Word else SelectionUnit.Character
+    val selected = pointerUnit(hit, unit, frame)
+    if (unit == SelectionUnit.Column) {
+        val x = point.x - frame.gutter + frame.origin.x
+        val c = EditorColumn(hit, x, hit, x)
+        drag = Some(EditorDrag(unit, selected, point, Some(c)))
+        selectColumn(c, frame)
+        return
+    }
+    if (mods.alt && unit == SelectionUnit.Character) {
+        val values = ArrayList<CodeSelection>()
+        for (s in old.values)
+            values.add(s)
+        values.add(selected)
+        editor.setSelections(values, values.size - 1L)
+    } else if (mods.shift) {
+        val end = if (hit.byteOffset < old.primary.anchor.byteOffset)
+            selected.anchor
+        else
+            selected.cursor
+        editor.setSelections([CodeSelection(old.primary.anchor, end)])
+    } else
+        editor.setSelections([selected])
+    drag = Some(
+        EditorDrag(
+            unit,
+            if (mods.shift) CodeSelection(old.primary.anchor, old.primary.anchor) else selected,
+            point,
+            None
+        )
+    )
+}
+
+internal fun EditorInk.finishDrag() {
+    drag = None
+    dragScroll.cancel()
+}
+
+internal fun EditorInk.updateDrag(point: Point, frame: EditorFrame) {
+    val gesture = drag ?: return
+    gesture.point = point
+    val x = clampCoordinate(point.x, frame.size.width)
+    val y = clampCoordinate(point.y, frame.size.height - 1.0)
+    val hit = frame.hit(Point(x, y)) ?: return
+    when (val col = gesture.column) {
+        case Some(val c) -> {
+            c.cursor = hit
+            c.x = x - frame.gutter + frame.origin.x
+            selectColumn(c, frame)
+        }
+
+        case None -> {
+            val target = pointerUnit(hit, gesture.unit, frame)
+            val selected = if (hit.byteOffset < gesture.anchor.range.start)
+                CodeSelection(gesture.anchor.cursor, target.anchor)
+            else
+                CodeSelection(gesture.anchor.anchor, target.cursor)
+            val old = editor.selections
+            editor
+                .setSelections(
+                    Array<CodeSelection>(old.values.size) { i ->
+                        if (i == old.primaryIndex) selected else old.values[i]
+                    },
+                    old.primaryIndex
+                )
+        }
+    }
+    if (point.x < 0.0 || point.y < 0.0 || point.x > frame.size.width || point.y >= frame.size.height
+    ) {
+        if (!dragScroll.isScheduled)
+            dragScroll.schedule(MonotonicTimeSource.now() + Duration.milliseconds(16L))
+    } else
+        dragScroll.cancel()
+}
+
+internal fun EditorInk.scrollDrag() {
+    val gesture = drag ?: return
+    val frame = accepted ?: return
+    val p = gesture.point
+    val dx = if (p.x < 0.0) p.x else if (p.x > frame.size.width) p.x - frame.size.width else 0.0
+    val dy = if (p.y < 0.0)
+        p.y
+    else if (p.y >= frame.size.height) p.y - frame.size.height + 1.0 else 0.0
+    if (dx == 0.0 && dy == 0.0) return
+    val moved = editor
+        .scroll
+        .scrollBy(Point(if (editor.options.softWrap) 0.0 else dx, dy), ScrollOrigin.User)
+    if (moved.x == 0.0 && moved.y == 0.0) return
+    scope.requestLayout()
+    dragScroll.schedule(MonotonicTimeSource.now() + Duration.milliseconds(16L))
+}
+
+internal fun EditorInk.continueDragAfterFrame() {
+    if (!dragScroll.isScheduled) return
+    val gesture = drag ?: return
+    scope
+        .application
+        .proxy()
+        .post { _ ->
+            val active = drag ?: return@post
+            if (!ended && active === gesture) {
+                val frame = currentFrame() ?: return@post
+                updateDrag(active.point, frame)
+            }
+        }
+}

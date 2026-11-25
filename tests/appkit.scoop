@@ -14,12 +14,12 @@ import scoop.window.native.*
 private fun loadEditorProbe(path: Ptr<Int8>, mode: Int): Ptr<Unit>?
 
 @Extern(name = "dlsym")
-private fun editorProbeSymbol(image: Ptr<Unit>, name: Ptr<Int8>): FunPtr<(Ptr<Unit>?, Int) -> Int>?
+private fun editorProbeSymbol(image: Ptr<Unit>, name: Ptr<Int8>): Ptr<Unit>?
 
 @Extern(name = "dlclose")
 private fun closeEditorProbe(image: Ptr<Unit>): Int
 
-internal fun withEditorProbe(symbol: String, body: (FunPtr<(Ptr<Unit>?, Int) -> Int>) -> Unit) {
+private fun withEditorProbeExport(symbol: String, body: (Ptr<Unit>) -> Unit) {
     val path = environmentVariable("SCOOP_EDITOR_APPKIT_PROBE") ?:
         throw IllegalStateException(
             Some("Set SCOOP_EDITOR_APPKIT_PROBE using validation/appkit.sh")
@@ -33,15 +33,34 @@ internal fun withEditorProbe(symbol: String, body: (FunPtr<(Ptr<Unit>?, Int) -> 
                 }
             }!!
         try {
-            val function = symbol
+            val address = symbol
                 .withCString { name ->
                     @Unsafe {
                         return@withCString editorProbeSymbol(image, name)
                     }
-                }!!
-            body(function)
+                } ?:
+                throw IllegalStateException(Some(f"Missing AppKit probe export ${symbol}"))
+            body(address)
         } finally {
             closeEditorProbe(image)
+        }
+    }
+}
+
+internal fun withEditorProbe(symbol: String, body: (FunPtr<(Ptr<Unit>?, Int) -> Int>) -> Unit) {
+    withEditorProbeExport(symbol) { address ->
+        @Unsafe {
+            body(address.cast<FunPtr<(Ptr<Unit>?, Int) -> Int>>().load())
+        }
+    }
+}
+
+internal fun withEditorMouse(
+    body: (FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>) -> Unit
+) {
+    withEditorProbeExport("scoop_editor_appkit_mouse") { address ->
+        @Unsafe {
+            body(address.cast<FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>>().load())
         }
     }
 }

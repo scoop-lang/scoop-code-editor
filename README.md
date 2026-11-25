@@ -9,7 +9,7 @@
 "scoop:scoop.ui.editor" = { version = "0.1.0", path = "../scoop-code-editor" }
 ```
 
-两个视图可以从同一份文档开始，各自拥有焦点、选区、滚动和扩展。下面的左侧视图支持用主修饰键加 F 打开查找面板。面板中的输入框和按钮读取宿主的 `ThemeSource`。使用 Scoop UI 控件的应用在 `context(themeSource) { Application().run(host) }` 中挂载。
+两个视图可以从同一份文档开始，各自拥有焦点、选区、滚动和扩展。下面的左侧视图支持用主修饰键加 F 打开查找面板。滚动条、查找和转到行列面板沿用宿主的 `ThemeSource`。独立挂载时使用内置浅色主题。使用 Scoop UI 控件的应用在 `context(themeSource) { Application().run(host) }` 中挂载。
 
 ```kotlin
 import scoop.ui.*
@@ -37,12 +37,13 @@ class SplitEditor(scope: ComponentScope) : Component(scope) {
 
 ## 本地验证
 
-本机验证使用包含 Scoop 主仓提交 `24cdad0e5` 的工具链和 macOS GUI 组件。该提交为读屏端提供 `AXTextArea` 多行语义。[Scoop Window 变更](https://github.com/scoop-lang/scoop/pull/219)
+本机验证使用包含 Scoop 主仓提交 `13a8be70b` 的工具链和 macOS GUI 组件。该工具链提供 `AXTextArea` 多行语义及自绘视口可用的主题滚动条。[原生无障碍接口](https://github.com/scoop-lang/scoop/pull/219) · [视口滚动条](https://github.com/scoop-lang/scoop/pull/222)
 
-`validation/appkit.sh` 执行普通 Cone 测试及真实 AppKit 输入与辅助技术协议测试。性能测量单独启动原生进程。[本机测量结果](docs/PERFORMANCE.md)
+`validation/appkit.sh` 在当前 macOS 桌面会话中以前台应用运行测试，覆盖真实原生输入、拖选、窗口焦点和辅助技术。可按用例或测试容器名称筛选。性能测量为两种文档各启动三个新进程。[本机测量结果](docs/PERFORMANCE.md)
 
 ```sh
 scoop check . --tests --release
 ./validation/appkit.sh
+./validation/appkit.sh test NativePointerTests ViewportCommandTests
 ./validation/appkit.sh benchmark
 ```

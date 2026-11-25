@@ -88,7 +88,7 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
         when (event) {
             case FocusChanged(val active) -> {
                 editor.breakUndoGroup()
-                dragging = false
+                if (!active) finishDrag()
                 if (!active && input.composing) {
                     input.synchronize(true);
                     projectionChanged = true;
@@ -104,7 +104,7 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
             }
 
             case TextInput(val value) -> native(value)
-            case Pointer(InputPointerEvent.Cancelled(_, _)) -> dragging = false
+            case Pointer(InputPointerEvent.Cancelled(_, _)) -> finishDrag()
             else -> {}
         }
         return
@@ -116,70 +116,22 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
         ) -> {
             if (button == ElementState.Pressed) {
                 val point = context.localPosition ?: return
-                val frame = currentFrame() ?: return
-                val hit = frame.hit(point) ?: return
-                area.requestFocus(FocusOrigin.Pointer)
-                val before = editor.selections
-                if (count >= 3 || point.x < frame.gutter) {
-                    val r = editor
-                        .document
-                        .lineRange(editor.document.positionAt(hit.byteOffset).line, true)
-                    editor.setSelections([CodeSelection.offsets(r.start, r.end)])
-                } else if (count == 2) {
-                    val pos = frame.displayPosition(hit)
-                    val row = frame.rowAt(pos) ?: return
-                    val word = row.ink.layout.wordRange(row.display(pos))
-                    editor
-                        .setSelections(
-                            [
-                                CodeSelection(
-                                    frame.original(row.source(TextPosition(word.start))),
-                                    frame.original(row.source(TextPosition(word.end)))
-                                )
-                            ]
-                        )
-                } else if (pointer.state.modifiers.alt) {
-                    val added = ArrayList<CodeSelection>()
-                    for (s in before.values)
-                        added.add(s)
-                    added.add(CodeSelection(hit, hit))
-                    editor.setSelections(added, added.size - 1L)
-                } else
-                    editor
-                        .setSelections(
-                            [
-                                CodeSelection(
-                                    if (pointer.state.modifiers.shift)
-                                        before.primary.anchor
-                                    else
-                                        hit,
-                                    hit
-                                )
-                            ]
-                        )
-                preferredX = []
-                dragging = true
-            } else
-                dragging = false
+                beginDrag(point, count.toLong(), pointer.state.modifiers)
+            } else {
+                val point = context.localPosition
+                val frame = currentFrame()
+                if (drag?.unit != None && point != None && frame?.rows?.size != None)
+                    updateDrag(point!!, frame!!)
+                finishDrag()
+            }
             context.consume()
         }
 
         case Pointer(InputPointerEvent.Moved(_)) ->
-            if (dragging) {
-                val pos = context.localPosition ?: return
+            if (drag?.unit != None) {
+                val point = context.localPosition ?: return
                 val frame = currentFrame() ?: return
-                val hit = frame.hit(pos) ?: return
-                val old = editor.selections
-                editor
-                    .setSelections(
-                        Array<CodeSelection>(old.values.size) { i ->
-                            if (i == old.primaryIndex)
-                                CodeSelection(old.primary.anchor, hit)
-                            else
-                                old.values[i]
-                        },
-                        old.primaryIndex
-                    )
+                updateDrag(point, frame)
                 context.consume()
             }
         case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) ->

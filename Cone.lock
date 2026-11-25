@@ -89,6 +89,19 @@ kind = "sysroot"
 name = "scoop.icons.lucide"
 
 [[resolutions.nodes]]
+coordinate = "scoop:scoop.json:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.std:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.json"
+
+[[resolutions.nodes]]
 coordinate = "scoop:scoop.math:0.1.0"
 kind = "library"
 dependencies = [
@@ -113,6 +126,19 @@ test-dependencies = []
 [resolutions.nodes.source]
 kind = "sysroot"
 name = "scoop.platform"
+
+[[resolutions.nodes]]
+coordinate = "scoop:scoop.regex:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.std:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.regex"
 
 [[resolutions.nodes]]
 coordinate = "scoop:scoop.std:0.1.0"
@@ -173,10 +199,14 @@ dependencies = [
     "scoop:scoop.core:0.1.0",
     "scoop:scoop.graphics.text:0.1.0",
     "scoop:scoop.graphics:0.1.0",
+    "scoop:scoop.json:0.1.0",
     "scoop:scoop.platform:0.1.0",
+    "scoop:scoop.regex:0.1.0",
     "scoop:scoop.std:0.1.0",
     "scoop:scoop.surface:0.1.0",
     "scoop:scoop.ui.component:0.1.0",
+    "scoop:scoop.ui.style.shadcn:0.1.0",
+    "scoop:scoop.ui.style:0.1.0",
     "scoop:scoop.ui:0.1.0",
     "scoop:scoop.window:0.1.0",
 ]
@@ -185,6 +215,23 @@ test-dependencies = []
 [resolutions.nodes.source]
 kind = "path"
 path = "."
+
+[[resolutions.nodes]]
+coordinate = "scoop:scoop.ui.style.shadcn:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.graphics.text:0.1.0",
+    "scoop:scoop.graphics:0.1.0",
+    "scoop:scoop.std:0.1.0",
+    "scoop:scoop.surface:0.1.0",
+    "scoop:scoop.ui.style:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.ui.style.shadcn"
 
 [[resolutions.nodes]]
 coordinate = "scoop:scoop.ui.style:0.1.0"
@@ -454,13 +501,14 @@ dependencies = [
     "scoop:scoop.std:0.1.0",
     "scoop:scoop.surface:0.1.0",
     "scoop:scoop.ui.component:0.1.0",
+    "scoop:scoop.ui.style.shadcn:0.1.0",
+    "scoop:scoop.ui.style:0.1.0",
     "scoop:scoop.ui:0.1.0",
     "scoop:scoop.window:0.1.0",
 ]
 test-dependencies = [
     "scoop:scoop.test:0.1.0",
     "scoop:scoop.ui.style.macos:0.1.0",
-    "scoop:scoop.ui.style:0.1.0",
 ]
 
 [resolutions.nodes.source]
@@ -483,6 +531,23 @@ test-dependencies = []
 [resolutions.nodes.source]
 kind = "sysroot"
 name = "scoop.ui.style.macos"
+
+[[resolutions.nodes]]
+coordinate = "scoop:scoop.ui.style.shadcn:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.graphics.text:0.1.0",
+    "scoop:scoop.graphics:0.1.0",
+    "scoop:scoop.std:0.1.0",
+    "scoop:scoop.surface:0.1.0",
+    "scoop:scoop.ui.style:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.ui.style.shadcn"
 
 [[resolutions.nodes]]
 coordinate = "scoop:scoop.ui.style:0.1.0"
