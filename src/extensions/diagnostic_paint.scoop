@@ -1,0 +1,125 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.window.Utf8Range
+
+public class CodeDiagnosticColors public constructor(
+    public val error: Color = Color(0.86, 0.20, 0.23),
+    public val warning: Color = Color(0.72, 0.47, 0.04),
+    public val info: Color = Color(0.17, 0.50, 0.82),
+    public val hint: Color = Color(0.42, 0.52, 0.56)
+) {
+    public fun forSeverity(level: CodeDiagnosticSeverity): Color = when (level) {
+        case Error -> error;
+        case Warning -> warning;
+        case Info -> info;
+        case Hint -> hint
+    }
+}
+
+private fun markerRects(row: ScreenRow, range: Utf8Range, emit: (Rect) -> Unit) {
+    val a = if (range.start > row.range.start) range.start else row.range.start
+    val b = if (range.end < row.range.end) range.end else row.range.end
+    if (a < b) {
+        row
+            .ink
+            .projection
+            .sourceSpans(a - row.range.start, b - row.range.start) { start, end ->
+                for (box in row.ink.layout.selection(TextRange(start, end)))
+                    emit(box.rect)
+            }
+    } else if (range.start == range.end && a == b) {
+        when (val rect = row.ink.layout.caret(row.display(TextPosition(a)))) {
+            case Some(val r) -> emit(Rect(r.x, r.y, 5.0, r.height))
+            case None -> {}
+        }
+    }
+}
+
+internal fun paintMarker(
+    canvas: Canvas,
+    frame: EditorFrame,
+    row: ScreenRow,
+    decoration: CodeDecoration,
+    detail: CodeDiagnosticMessage
+) {
+    val paint = Paint(color = frame.options.theme.diagnostics.forSeverity(detail.severity))
+    markerRects(row, decoration.range) { r ->
+        val y = row.top - frame.origin.y + r.y + r.height - 2.0
+        if (y < 0.0 || y >= frame.size.height) return@markerRects
+        val x = r.x + frame.gutter - frame.origin.x
+        var start = if (x < frame.gutter) frame.gutter else x
+        val end = if (x + r.width > frame.size.width) frame.size.width else x + r.width
+        while (start < end) {
+            val mid = if (start + 2.0 > end) end else start + 2.0
+            val next = if (start + 4.0 > end) end else start + 4.0
+            canvas.drawLine(Point(start, y), Point(mid, y - 1.5), paint)
+            if (mid < next) canvas.drawLine(Point(mid, y - 1.5), Point(next, y), paint)
+            start = next
+        }
+    }
+}
+
+internal fun firstMarker(row: ScreenRow, decorations: Array<CodeDecoration>): CodeDecoration? {
+    var rank = 4
+    var result: CodeDecoration? = None
+    for (d in decorations) {
+        val detail = d.style.marker ?: continue
+        if (d.range.start < row.range.start || d.range.start > row.range.end) continue
+        val priority = diagnosticRank(detail.severity)
+        if (priority < rank) {
+            rank = priority;
+            result = Some(d)
+        }
+    }
+    return result
+}
+
+internal fun EditorInk.markerAtPoint(frame: EditorFrame, point: Point): Long? {
+    if (!editor.document.diagnosticStore.hasMarkers ||
+        point.y <
+        0.0 ||
+        point.y >=
+        frame.size.height ||
+        point.x <
+        0.0 ||
+        point.x >=
+        frame.size.width
+    )
+        return None
+    val w = point.y + frame.origin.y
+    for (row in frame.rows) {
+        if (w < row.top || w >= row.top + row.height) continue
+        val items = decorationsFor(row.range)
+        if (point.x < frame.gutter) {
+            if (point.x >= 4.0) return None
+            val first = firstMarker(row, items) ?: return None
+            return Some(frame.original(TextPosition(first.range.start)).byteOffset)
+        }
+        val x = point.x + frame.origin.x - frame.gutter
+        val y = w - row.top
+        for (d in items) {
+            if (d.style.marker?.owner == None) continue
+            val found = MarkerHit()
+            markerRects(row, d.range) { r ->
+                if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+                    found.inside = true
+            }
+            if (found.inside) {
+                val caret = row.source(row.ink.layout.hitTest(Point(x, y))).byteOffset
+                val offset = if (caret >= d.range.start && caret < d.range.end)
+                    caret
+                else
+                    d.range.start
+                return Some(frame.original(TextPosition(offset)).byteOffset)
+            }
+        }
+        break
+    }
+    return None
+}
+
+private class MarkerHit {
+    var inside = false
+}

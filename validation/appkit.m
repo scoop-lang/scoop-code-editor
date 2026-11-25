@@ -98,7 +98,8 @@ static void sendEditorMouse(void *rawView, int phase, double x, double y,
                               int count, int rectangle) {
     NSView *view = (__bridge NSView *)rawView;
     NSEventType type = phase == 0 ? NSEventTypeLeftMouseDown :
-                       phase == 1 ? NSEventTypeLeftMouseDragged : NSEventTypeLeftMouseUp;
+                       phase == 1 ? NSEventTypeLeftMouseDragged :
+                       phase == 3 ? NSEventTypeMouseMoved : NSEventTypeLeftMouseUp;
     NSPoint point = [view convertPoint:NSMakePoint(x, y) toView:nil];
     NSEventModifierFlags flags = rectangle ? NSEventModifierFlagOption | NSEventModifierFlagShift : 0;
     NSEvent *event = [NSEvent mouseEventWithType:type location:point modifierFlags:flags
@@ -107,6 +108,7 @@ static void sendEditorMouse(void *rawView, int phase, double x, double y,
                                     eventNumber:1 clickCount:count pressure:phase == 2 ? 0.0 : 1.0];
     if (phase == 0) [view mouseDown:event];
     else if (phase == 1) [view mouseDragged:event];
+    else if (phase == 3) [view mouseMoved:event];
     else [view mouseUp:event];
 }
 

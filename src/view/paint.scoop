@@ -59,6 +59,23 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
             canvas.drawRect(Rect(0.0, 0.0, size.width, size.height), Paint(color = opt.background))
             for (row in frame.rows) {
                 val lineStyles = ink.decorationsFor(row.range)
+                when (val mark = firstMarker(row, lineStyles)) {
+                    case Some(val m) -> {
+                        val level = m.style.marker!!.severity
+                        canvas
+                            .drawRect(
+                                Rect(
+                                    0.0,
+                                    row.top - frame.origin.y,
+                                    3.0,
+                                    row.ink.layout.lines[0L].rect.height
+                                ),
+                                Paint(color = opt.theme.diagnostics.forSeverity(level))
+                            )
+                    }
+
+                    case None -> {}
+                }
                 if (opt.glyphMargin)
                     when (val glyph = lineGlyph(row, lineStyles)) {
                         case Some(val g) -> paintGlyph(canvas, frame, row, g)
@@ -182,6 +199,10 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                                 Point(frame.gutter - frame.origin.x, row.top - frame.origin.y)
                             )
                         for (d in decorations) {
+                            when (val detail = d.style.marker) {
+                                case Some(val m) -> paintMarker(canvas, frame, row, d, m);
+                                case None -> {}
+                            }
                             when (d.style.underline) {
                                 case Some(val color) ->
                                     paintRange(canvas, frame, row, d.range, color, true);

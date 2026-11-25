@@ -105,6 +105,7 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
 
             case TextInput(val value) -> native(value)
             case Pointer(InputPointerEvent.Cancelled(_, _)) -> finishDrag()
+            case Pointer(InputPointerEvent.Left(_)) -> clearDiagnosticHover()
             else -> {}
         }
         return
@@ -133,8 +134,15 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
                 val frame = currentFrame() ?: return
                 updateDrag(point, frame)
                 context.consume()
-            }
-        case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) ->
+            } else
+                when (val point = context.localPosition) {
+                    case Some(val p) -> diagnosticHover(p);
+                    case None -> {}
+                }
+        case Pointer(InputPointerEvent.Left(_)) -> clearDiagnosticHover()
+
+        case Pointer(InputPointerEvent.Wheel(_, _, val phase, val momentum)) -> {
+            clearDiagnosticHover()
             viewport
                 .consumeScroll(
                     context, editor.options.text.fontSize, if (editor.options.softWrap)
@@ -143,6 +151,8 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
                         ScrollAxes.Both,
                     phase = phase, momentumPhase = momentum
                 )
+        }
+
         case TextCommand(val command) -> if (command(command)) context.consume()
 
         case Keyboard(val key) -> {

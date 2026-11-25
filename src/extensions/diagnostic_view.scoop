@@ -1,0 +1,182 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+
+private fun levelName(level: CodeDiagnosticSeverity): String = when (level) {
+    case Error -> "Error";
+    case Warning -> "Warning";
+    case Info -> "Info";
+    case Hint -> "Hint"
+}
+
+internal class DiagnosticView(val editor: CodeEditorState) {
+    internal var showing: Array<CodeMarker> = []
+    private var anchor: Long? = None
+    private var active: CodeDiagnosticMessage? = None
+    private var widget: Closeable? = None
+
+    internal fun dismiss() {
+        widget?.close()
+        widget = None
+        anchor = None
+        active = None
+        showing = []
+    }
+    internal fun mapped(map: CodeEditMap) {
+        val old = anchor ?: return
+        anchor = Some(map.map(old))
+        refresh()
+    }
+    internal fun refresh() {
+        val at = anchor ?: return
+        display(at, active)
+    }
+    internal fun display(at: Long, one: CodeDiagnosticMessage? = None): Boolean {
+        val marks = editor.document.diagnosticsAt(at)
+        var visible = marks
+        when (one) {
+            case Some(val wanted) ->
+                for (m in marks)
+                    if (m.detail === wanted) {
+                        visible = [m];
+                        break
+                    }
+            case None -> {}
+        }
+        if (visible.size == 0L) {
+            dismiss();
+            return false
+        }
+        val old = anchor
+        var keep = old !=
+            None &&
+            editor.document.positionAt(old!!).line ==
+            editor.document.positionAt(at).line &&
+            showing.size ==
+            visible.size
+        if (keep)
+            for (i in 0L..<visible.size)
+                if (visible[i].detail !== showing[i].detail) {
+                    keep = false;
+                    break
+                }
+        active = one
+        showing = visible
+        if (keep) return true
+        widget?.close()
+        anchor = Some(at)
+        val text = StringBuilder()
+        for (i in 0L..<visible.size) {
+            if (i > 0L) text.append("\n")
+            val d = visible[i].detail
+            text.append(levelName(d.severity) + " · " + d.owner + "\n" + d.message)
+        }
+        val source = Some(editor.uiTheme())
+        val content = label(text.toString()) { theme = source }
+        widget = Some(editor.addContentWidget(at, card(content) { theme = source }))
+        return true
+    }
+    internal fun navigate(forward: Boolean): Boolean {
+        val doc = editor.document
+        val items = doc.diagnosticStore.collect(Utf8Range(0L, doc.byteLength))
+        if (items.size == 0L) {
+            dismiss();
+            return false
+        }
+        val current = editor.selections.primary
+        var index = -1L
+        when (val selected = active) {
+            case Some(val previous) ->
+                for (i in 0L..<items.size)
+                    if (items[i].detail === previous && current.range == items[i].range) {
+                        index = if (forward)
+                            (i + 1L) % items.size
+                        else
+                            (i + items.size - 1L) % items.size;
+                        break
+                    }
+            case None -> {}
+        }
+        if (index < 0L) {
+            if (forward) {
+                index = 0L
+                for (i in 0L..<items.size)
+                    if (items[i].range.start >= current.cursor.byteOffset) {
+                        index = i;
+                        break
+                    }
+            } else {
+                index = items.size - 1L
+                var i = items.size
+                while (i > 0L) {
+                    i -= 1L;
+                    if (items[i].range.start <= current.cursor.byteOffset) {
+                        index = i;
+                        break
+                    }
+                }
+            }
+        }
+        val marker = items[index]
+        editor.setSelections([CodeSelection.offsets(marker.range.start, marker.range.end)])
+        editor.revealRange(marker.range)
+        return display(marker.range.start, Some(marker.detail))
+    }
+}
+
+public fun CodeEditorState.showDiagnosticsAt(offset: Long): Boolean = diagnosticView.display(offset)
+
+public fun CodeEditorState.dismissDiagnostics() {
+    diagnosticView.dismiss()
+}
+
+public fun CodeEditorState.visibleDiagnostics(): Array<CodeMarker> = diagnosticView.showing
+
+public fun CodeEditorState.nextDiagnostic(forward: Boolean = true): Boolean = diagnosticView
+    .navigate(forward)
+
+internal fun CodeEditorState.installDiagnosticActions() {
+    addAction(
+        "diagnostic.next",
+        "Next diagnostic",
+        namedShortcut(NamedKey.F8),
+        { e -> e.document.diagnosticStore.hasMarkers }
+    ) { e -> e.nextDiagnostic() }
+    addAction(
+        "diagnostic.previous",
+        "Previous diagnostic",
+        namedShortcut(NamedKey.F8, ShortcutModifiers(shift = true)),
+        { e -> e.document.diagnosticStore.hasMarkers }
+    ) { e -> e.nextDiagnostic(false) }
+}
+
+internal fun EditorInk.diagnosticHover(point: Point) {
+    if (!editor.document.diagnosticStore.hasMarkers) return
+    val frame = currentFrame() ?: return
+    val pos = markerAtPoint(frame, point)
+    if (pos == None) {
+        clearDiagnosticHover();
+        return
+    }
+    hoverPoint = Some(point)
+    if (pos ==
+        hoverMarker &&
+        (diagnosticDelay.isScheduled || editor.diagnosticView.showing.size > 0L)
+    )
+        return
+    hoverMarker = pos
+    diagnosticDelay.schedule(MonotonicTimeSource.now() + Duration.milliseconds(240L))
+}
+
+internal fun EditorInk.clearDiagnosticHover() {
+    diagnosticDelay.cancel()
+    if (hoverMarker != None) editor.dismissDiagnostics()
+    hoverMarker = None
+    hoverPoint = None
+}

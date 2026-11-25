@@ -1,0 +1,149 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Test
+private class DiagnosticWindowTests {
+    @Ignore("Run validation/appkit.sh on macOS")
+    @Test(useProcess = true)
+    fun nativeHoverShowsOverlappingDiagnosticsAndClearsOnLeavingTheMarkedText() {
+        withEditorMouse { mouse ->
+            val run = DiagnosticWindow(mouse)
+            UiHost(onRootError = { _, e -> throw e }, handler = { h, a, e -> run.event(h, a, e) })
+                .use { h -> Application().run(h) }
+            assertTrue(run.finished)
+        }
+    }
+}
+
+private class DiagnosticWindow(
+    val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>
+) {
+    val doc = CodeDocument("one value\nnext\nlast")
+    val editor = CodeEditorState(doc)
+    val errors = doc.diagnostics("compiler")
+    val notes = doc.diagnostics("lint")
+    var finished = false
+    private val end = MonotonicTimeSource.now() + Duration.seconds(15L)
+    private var window: Window? = None
+    private var queued = false
+    private var stage = 0
+    init {
+        errors
+            .set(
+                0L,
+                [CodeDiagnostic(Utf8Range(4L, 9L), CodeDiagnosticSeverity.Error, "Unknown value")]
+            )
+        notes
+            .set(
+                0L,
+                [CodeDiagnostic(Utf8Range(5L, 8L), CodeDiagnosticSeverity.Hint, "Choose a name")]
+            )
+    }
+    private fun move(pos: TextPosition) {
+        val r = editor.caretRect(pos)!!
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                when (lease.handle) {
+                    case AppKit(_, val view) ->
+                        mouse(view, 3, r.x + 0.5, r.y + r.height / 2.0, 0, 0)
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Editor marker hover";
+                            size = LogicalSize(480.0, 250.0)
+                        }
+                    )
+                window = Some(w)
+                host.attach(w, { scope -> DiagnosticWindowRoot(editor, scope) })
+                w.requestFocus()
+                app.setControlFlow(ControlFlow.WaitUntil(end))
+            }
+
+            case NewEvents(StartCause.Deadline) -> fail(Some(f"diagnostic hover stage ${stage}"))
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                if (queued ||
+                    finished ||
+                    window?.isFocused !=
+                    Some(true) ||
+                    ink.currentFrame()?.rows?.size ==
+                    None
+                )
+                    return
+                queued = true
+                app
+                    .proxy()
+                    .post { active ->
+                        queued = false
+                        val frame = ink.currentFrame() ?: return@post
+                        when (stage) {
+                            case 0 -> move(TextPosition(6L))
+
+                            case 1 -> {
+                                if (editor.visibleDiagnostics().size == 0L) return@post
+                                assertEquals(2L, editor.visibleDiagnostics().size)
+                                assertEquals(
+                                    "Unknown value",
+                                    editor.visibleDiagnostics()[0L].detail.message
+                                )
+                                assertEquals(1L, frame.placedWidgets.size)
+                                val top = frame.rows[0L].top - frame.origin.y
+                                assertEquals(4L, ink.markerAtPoint(frame, Point(1.0, top + 4.0))!!)
+                                move(TextPosition(0L))
+                            }
+
+                            case 2 -> {
+                                if (editor.visibleDiagnostics().size != 0L) return@post
+                                assertEquals(0L, frame.placedWidgets.size)
+                                editor.options = CodeEditorOptions(theme = highContrastCodeTheme())
+                                editor.nextDiagnostic()
+                            }
+
+                            case 3 -> {
+                                assertEquals("value", editor.selectedText())
+                                assertEquals(1L, frame.placedWidgets.size)
+                                errors.close()
+                                notes.close()
+                            }
+
+                            case 4 -> {
+                                assertEquals(0L, frame.placedWidgets.size)
+                                assertEquals(0L, doc.version)
+                                finished = true
+                                active.requestExit()
+                            }
+
+                            else -> {}
+                        }
+                        stage += 1
+                    }
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class DiagnosticWindowRoot(val editor: CodeEditorState, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

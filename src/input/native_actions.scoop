@@ -16,7 +16,9 @@ private fun CodeEditorState.nativeEnabled(cmd: TextEditCommand): Boolean = when 
     case Undo -> canUndo
     case Redo -> canRedo
     case Cancel ->
-        mounted?.input?.composing ==
+        diagnosticView.showing.size >
+            0L ||
+            mounted?.input?.composing ==
             Some(true) ||
             selections.values.size >
             1L ||
@@ -217,6 +219,8 @@ private fun CodeEditorState.performCommand(cmd: TextEditCommand) {
             val ink = mounted
             if (ink?.input?.composing == Some(true))
                 ink!!.cancelComposition()
+            else if (diagnosticView.showing.size > 0L)
+                dismissDiagnostics()
             else if (selections.values.size > 1L)
                 setSelections([selections.primary])
             else

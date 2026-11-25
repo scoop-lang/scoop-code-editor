@@ -54,6 +54,13 @@ private fun EditorInk.pointerUnit(
 
 internal fun EditorInk.beginDrag(point: Point, count: Long, mods: Modifiers) {
     val frame = currentFrame() ?: return
+    if (point.x >= 0.0 && point.x < 4.0) {
+        val pos = markerAtPoint(frame, point)
+        if (pos != None) {
+            editor.showDiagnosticsAt(pos!!);
+            return
+        }
+    }
     when (val mark = glyphAt(frame, point)) {
         case Some(val m) ->
             when (val click = m.glyph.onClick) {

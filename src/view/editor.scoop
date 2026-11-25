@@ -53,6 +53,17 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
     internal var projectionChanged = false
     internal var drag: EditorDrag? = None
     internal var column: EditorColumn? = None
+    internal var hoverMarker: Long? = None
+    internal var hoverPoint: Point? = None
+    internal val diagnosticDelay = scope
+        .createDeadline {
+            val f = currentFrame()
+            val p = hoverPoint
+            if (!ended && p != None && f?.rows?.size != None) {
+                val at = markerAtPoint(f!!, p!!)
+                if (at != None) editor.showDiagnosticsAt(at!!)
+            }
+        }
     internal val dragScroll = scope.createDeadline { scrollDrag() }
     internal var preferredX: Array<Double?> = []
     internal var caretVisible = true
@@ -311,6 +322,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
     }
     private fun unbind() {
         ended = true
+        clearDiagnosticHover()
         finishDrag()
         column = None
         blink.cancel()

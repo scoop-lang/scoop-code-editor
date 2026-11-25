@@ -1,0 +1,128 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.window.Utf8Range
+
+public enum CodeDiagnosticSeverity {
+    Error, Warning, Info, Hint
+}
+
+public struct CodeDiagnostic(
+    val range: Utf8Range,
+    val severity: CodeDiagnosticSeverity,
+    val message: String
+)
+
+public class CodeDiagnosticMessage internal constructor(
+    public val owner: String,
+    public val severity: CodeDiagnosticSeverity,
+    public val message: String
+)
+
+public struct CodeMarker(val range: Utf8Range, val detail: CodeDiagnosticMessage)
+
+internal fun diagnosticRank(level: CodeDiagnosticSeverity): Int = when (level) {
+    case Error -> 0
+    case Warning -> 1
+    case Info -> 2
+    case Hint -> 3
+}
+
+public class CodeDiagnostics internal constructor(
+    private val store: DiagnosticStore,
+    public val owner: String
+) : Closeable {
+    internal val decorations = store.doc.decorations()
+    internal var count = 0L
+    private var closed = false
+    public fun set(expectedVersion: Long, values: List<CodeDiagnostic>): Boolean {
+        if (closed) throw IllegalStateException(Some("diagnostic collection is closed"))
+        if (expectedVersion != store.doc.version) return false
+        val entries = Array<CodeDecoration>(values.size) { i ->
+            val d = values[i]
+            if (!validRange(store.doc.root, d.range) || d.message.byteLength == 0L)
+                throw IllegalArgumentException(Some("invalid diagnostic range or empty message"))
+            val detail = CodeDiagnosticMessage(owner, d.severity, d.message)
+            CodeDecoration(d.range, CodeDecorationStyle(marker = Some(detail)))
+        }
+        decorations.set(entries)
+        count = entries.size
+        store.changed()
+        return true
+    }
+    public override fun close() {
+        if (closed) return
+        closed = true
+        count = 0L
+        decorations.close()
+        store.remove(this)
+    }
+}
+
+internal class DiagnosticStore(val doc: CodeDocument) {
+    private val sources = ArrayList<CodeDiagnostics>()
+    internal var hasMarkers = false
+    internal fun source(owner: String): CodeDiagnostics {
+        if (owner.byteLength == 0L)
+            throw IllegalArgumentException(Some("diagnostics need a source name"))
+        for (source in sources)
+            if (source.owner == owner) return source
+        val value = CodeDiagnostics(this, owner)
+        sources.add(value)
+        return value
+    }
+    internal fun remove(source: CodeDiagnostics) {
+        for (i in 0L..<sources.size)
+            if (sources[i] === source) {
+                sources.removeAt(i);
+                break
+            }
+        changed()
+    }
+    internal fun changed() {
+        hasMarkers = false
+        for (source in sources)
+            if (source.count > 0L) {
+                hasMarkers = true;
+                break
+            }
+        for (view in doc.views)
+            view.diagnosticView.refresh()
+    }
+    internal fun collect(range: Utf8Range, point: Boolean = false): Array<CodeMarker> {
+        if (!hasMarkers) return []
+        val found = ArrayList<CodeDecoration>()
+        for (source in sources)
+            if (source.count > 0L) source.decorations.collect(range, found)
+        val result = ArrayList<CodeMarker>()
+        for (d in found) {
+            if (point && d.range.start != d.range.end && range.start >= d.range.end) continue
+            val detail = d.style.marker ?: continue
+            result.add(CodeMarker(d.range, detail))
+        }
+        result
+            .sortWith(
+                comparatorOf<CodeMarker> { a, b ->
+                    if (!point && a.range.start != b.range.start)
+                        a.range.start.compareTo(b.range.start)
+                    else if (diagnosticRank(a.detail.severity) != diagnosticRank(b.detail.severity))
+                        diagnosticRank(a.detail.severity)
+                            .compareTo(diagnosticRank(b.detail.severity))
+                    else if (a.range.end != b.range.end)
+                        a.range.end.compareTo(b.range.end)
+                    else
+                        a.detail.owner.compareTo(b.detail.owner)
+                }
+            )
+        return result.toArray()
+    }
+}
+
+public fun CodeDocument.diagnostics(owner: String): CodeDiagnostics = diagnosticStore.source(owner)
+
+public fun CodeDocument.diagnosticsAt(offset: Long): Array<CodeMarker> {
+    if (!scalarBoundary(root, offset))
+        throw IllegalArgumentException(Some("invalid diagnostic position"))
+    return diagnosticStore.collect(Utf8Range(offset, offset), true)
+}

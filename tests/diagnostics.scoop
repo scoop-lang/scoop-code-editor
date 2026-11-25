@@ -1,0 +1,58 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class DiagnosticTests {
+    @Test
+    fun sourcesAreVersionedAndSharedAndOverlappingMarkersRemainIndependentlyNavigable() {
+        val doc = CodeDocument("one\n  word\nlast")
+        val e = CodeEditorState(doc)
+        val peer = CodeEditorState(doc)
+        val types = doc.diagnostics("types")
+        val lint = doc.diagnostics("lint")
+        val r = Utf8Range(6L, 10L)
+        assertTrue(types === doc.diagnostics("types"))
+        assertTrue(types.set(0L, [CodeDiagnostic(r, CodeDiagnosticSeverity.Error, "unknown name")]))
+        assertTrue(
+            lint
+                .set(
+                    0L,
+                    [
+                        CodeDiagnostic(r, CodeDiagnosticSeverity.Warning, "style"),
+                        CodeDiagnostic(
+                            Utf8Range(doc.byteLength, doc.byteLength),
+                            CodeDiagnosticSeverity.Hint,
+                            "newline"
+                        )
+                    ]
+                )
+        )
+        assertEquals(2L, doc.diagnosticsAt(7L).size)
+        assertEquals(0L, doc.diagnosticsAt(10L).size)
+        e.folding.addManual(CodeFoldRange(0L, 1L))
+        e.readOnly = true
+        assertTrue(e.runAction("diagnostic.next"))
+        assertEquals("word", e.selectedText())
+        assertEquals(0L, e.folding.collapsedRanges().size)
+        assertEquals("types", e.visibleDiagnostics()[0L].detail.owner)
+        assertTrue(e.nextDiagnostic())
+        assertEquals("lint", e.visibleDiagnostics()[0L].detail.owner)
+        assertTrue(e.nextDiagnostic(false))
+        assertEquals("types", e.visibleDiagnostics()[0L].detail.owner)
+        assertEquals(0L, peer.visibleDiagnostics().size)
+        peer.executeEdits(0L, [CodeEdit(Utf8Range(0L, 0L), "前\n")])
+        assertFalse(types.set(0L, []))
+        assertEquals(Utf8Range(10L, 14L), e.visibleDiagnostics()[0L].range)
+        assertTrue(e.showDiagnosticsAt(11L))
+        assertEquals(2L, e.visibleDiagnostics().size)
+        types.close()
+        assertEquals("lint", e.visibleDiagnostics()[0L].detail.owner)
+        assertTrue(lint.set(doc.version, []))
+        assertEquals(0L, e.visibleDiagnostics().size)
+        assertFalse(e.canRunAction("diagnostic.next"))
+        assertEquals(1L, doc.version)
+        assertTrue(peer.canUndo)
+    }
+}
