@@ -126,6 +126,10 @@ private fun styledRun(text: String, layers: Array<RunLayer>): TextSpan {
     return nested
 }
 
+/** Copies only the requested bytes from a line already being scanned. */
+internal fun textFromLineBytes(bytes: Array<Byte>, start: Long, end: Long): String = String
+    .fromUtf8(Array<Byte>(end - start) { index -> bytes[start + index] })
+
 internal fun styledLine(
     projection: LineProjection,
     base: TextStyle,
@@ -159,12 +163,13 @@ internal fun styledLine(
     }
     if (projection.hints.size > 0L && spans.size > 1L)
         spans.sortWith(comparatorOf<EditorStyleRun> { a, b -> a.start.compareTo(b.start) })
+    val bytes = projection.text.toByteArray()
     var at = 0L
     for (span in spans) {
-        if (at < span.start) text(projection.text.utf8Slice(Utf8Range(at, span.start)))
-        add(styledRun(projection.text.utf8Slice(Utf8Range(span.start, span.end)), span.layers))
+        if (at < span.start) text(textFromLineBytes(bytes, at, span.start))
+        add(styledRun(textFromLineBytes(bytes, span.start, span.end), span.layers))
         at = span.end
     }
     if (at < projection.text.byteLength || spans.size == 0L)
-        text(projection.text.utf8Slice(Utf8Range(at, projection.text.byteLength)))
+        text(textFromLineBytes(bytes, at, bytes.size))
 }

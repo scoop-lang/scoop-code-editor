@@ -33,7 +33,7 @@ def compiled_tests():
     raise SystemExit("The build did not report a test executable.")
 
 
-def run_case(bundle, probe, directory, index, case, shape=None):
+def run_case(bundle, probe, directory, index, case, shape=None, mode=None):
     record = directory / "result"
     output = directory / "stdout"
     error = directory / "stderr"
@@ -55,7 +55,14 @@ def run_case(bundle, probe, directory, index, case, shape=None):
         f"SCOOP_TEST_CASE_RESULT={record}",
     ]
     if shape:
-        command.extend(["--env", f"SCOOP_EDITOR_BENCH_SHAPE={shape}"])
+        command.extend(
+            [
+                "--env",
+                f"SCOOP_EDITOR_BENCH_SHAPE={shape}",
+                "--env",
+                f"SCOOP_EDITOR_BENCH_MODE={mode}",
+            ]
+        )
     # LaunchServices can lose the wait registration for a case that exits immediately.
     launch = subprocess.run(
         [*command, "--args", "--scoop-test-child", str(index)],
@@ -82,14 +89,15 @@ def main():
         if mode == "benchmark":
             if case["name"] == "measureNativeEditorWorkload":
                 selected.extend(
-                    (index, case, shape)
+                    (index, case, shape, configuration)
                     for _ in range(3)
                     for shape in ("lines", "line")
+                    for configuration in ("plain", "extended")
                 )
         elif case["ignore_reason"] in (None, "Run validation/appkit.sh on macOS") and (
             not filters or any(term in case["display_name"] for term in filters)
         ):
-            selected.append((index, case, None))
+            selected.append((index, case, None, None))
     if not selected:
         raise SystemExit("No matching editor tests.")
     with tempfile.TemporaryDirectory(prefix="scoop-editor-appkit-") as temporary:
@@ -127,8 +135,8 @@ def main():
             ],
             check=True,
         )
-        for index, case, shape in selected:
-            run_case(bundle, probe, directory, index, case, shape)
+        for index, case, shape, configuration in selected:
+            run_case(bundle, probe, directory, index, case, shape, configuration)
     print(f"{len(selected)} editor tests passed")
 
 

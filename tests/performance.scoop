@@ -1,6 +1,7 @@
 package scoop.ui.editor
 
 import scoop.graphics.*
+import scoop.graphics.text.*
 import scoop.platform.env.environmentVariable
 import scoop.platform.time.*
 import scoop.test.*
@@ -19,6 +20,8 @@ private class EditorPerformanceTests {
     fun measureNativeEditorWorkload() {
         val shape = environmentVariable("SCOOP_EDITOR_BENCH_SHAPE")!!.decodeUtf8()
         assertTrue(shape == "lines" || shape == "line")
+        val mode = environmentVariable("SCOOP_EDITOR_BENCH_MODE")!!.decodeUtf8()
+        assertTrue(mode == "plain" || mode == "extended")
         val sample = StringBuilder(300000L)
         for (i in 0L..<100000L) {
             if (i != 0L) sample.append(if (shape == "lines") "\n" else " ")
@@ -26,7 +29,7 @@ private class EditorPerformanceTests {
         }
         val source = sample.toString()
         withEditorProbe("scoop_editor_appkit_measure") { native ->
-            val run = EditorMeasurements(shape, native)
+            val run = EditorMeasurements(shape, mode, native)
             val begin = MonotonicTimeSource.now()
             val doc = CodeDocument(source)
             run.report("open-model", begin, doc.byteLength)
@@ -36,6 +39,51 @@ private class EditorPerformanceTests {
             run.report("full-value-materialize", read, full.byteLength)
             assertEquals(source, full)
             val editor = CodeEditorState(doc)
+            if (mode == "extended") {
+                val setup = MonotonicTimeSource.now()
+                doc.language = Some(scoopCodeLanguage())
+                val marks = ArrayList<CodeDiagnostic>()
+                for (i in 0L..<100L) {
+                    val at = i * 3000L + 2997L
+                    marks
+                        .add(
+                            CodeDiagnostic(
+                                Utf8Range(at, at + 2L),
+                                CodeDiagnosticSeverity.Info,
+                                "Sample marker"
+                            )
+                        )
+                }
+                doc.diagnostics("sample").set(doc.version, marks)
+                doc
+                    .inlayHints()
+                    .set(
+                        doc.version,
+                        [CodeInlayHint(1L, CodeInlaySide.Before, CodeInlayText("parameter: "))]
+                    )
+                editor
+                    .decorations()
+                    .set(
+                        [
+                            CodeDecoration(
+                                Utf8Range(0L, 2L),
+                                CodeDecorationStyle(font = Some(spanStyle { weight = Some(700) }))
+                            )
+                        ]
+                    )
+                editor
+                    .codeLenses()
+                    .set(
+                        doc.version,
+                        [
+                            CodeLens(
+                                Utf8Range(0L, 2L),
+                                CodeLensContent.Ready(CodeLensAction("Run") { _ -> })
+                            )
+                        ]
+                    )
+                run.report("install-contributions", setup)
+            }
             val window = PerformanceWindow(run, editor)
             try {
                 UiHost(
@@ -53,6 +101,7 @@ private class EditorPerformanceTests {
 
 private class EditorMeasurements(
     val shape: String,
+    val mode: String,
     val native: FunPtr<(Ptr<Unit>?, Int) -> Int>
 ) {
     fun report(operation: String, begin: MonotonicInstant, bytes: Long = 0L) {
@@ -61,7 +110,7 @@ private class EditorMeasurements(
         @Unsafe {
             val kib = native(None, 0)
             assertTrue(kib > 0)
-            println(f"BENCH ${shape} ${operation} us=${us} peak_kib=${kib} bytes=${bytes}")
+            println(f"BENCH ${shape} ${mode} ${operation} us=${us} peak_kib=${kib} bytes=${bytes}")
             flushBenchmarkOutput(None)
         }
     }
@@ -75,6 +124,7 @@ private class PerformanceWindow(val run: EditorMeasurements, val editor: CodeEdi
     private var nextFocusAttempt = MonotonicTimeSource.now()
     private var stage = 0
     private var posted = false
+    private var chosen: CodeSelection? = None
     private var find: CodeFind? = None
     var finished = false
 
@@ -150,7 +200,12 @@ private class PerformanceWindow(val run: EditorMeasurements, val editor: CodeEdi
                     return
                 if (stage == 4 && (ink.input.composing || doc.version != 2L)) return
                 if (stage == 5 && frame.origin.x <= 0.0 && frame.origin.y <= 0.0) return
-                if (stage == 6 && doc.version != 3L || stage == 7 && doc.version != 4L) return
+                if (stage == 6) {
+                    val selection = chosen ?: return
+                    val expected = editor.caretRect(selection.cursor)
+                    if (expected == None || ink.area.visibleCaretBounds != expected) return
+                }
+                if (stage == 7 && doc.version != 3L || stage == 8 && doc.version != 4L) return
                 posted = true
                 app
                     .proxy()
@@ -205,6 +260,49 @@ private class PerformanceWindow(val run: EditorMeasurements, val editor: CodeEdi
 
             case 5 -> {
                 run.report("scroll-to-frame", stamp)
+                fun at(x: Double, y: Double): TextPosition {
+                    val box = ink.area.toWindow(Rect(current.gutter + x, y, 1.0, 1.0))!!
+                    return when (val target = editor.hitTest(Point(box.x, box.y))!!) {
+                        case Text(val pos) -> pos
+                        else -> throw IllegalStateException(Some("benchmark point must hit text"))
+                    }
+                }
+                val visibleY = ArrayList<Double>()
+                for (row in current.rows) {
+                    val start = row.top - current.origin.y
+                    val lo = if (start > 0.0) start else 0.0
+                    val hi = if (start + row.height < current.size.height)
+                        start + row.height
+                    else
+                        current.size.height
+                    if (hi > lo + 1.0) visibleY.add((lo + hi) / 2.0)
+                }
+                assertTrue(visibleY.size > 0L)
+                val hit = MonotonicTimeSource.now()
+                var last = 0L
+                for (i in 0L..<500L) {
+                    val x = if (run.shape == "lines")
+                        1.0 + (i % 14L).toDouble()
+                    else
+                        12.0 + (i % 24L).toDouble() * 5.0
+                    last = at(x, visibleY[i % visibleY.size]).byteOffset
+                }
+                run.report("500-window-hits", hit)
+                assertTrue(last > 0L)
+                val a = at(3.0, visibleY[0L])
+                val b = if (run.shape == "lines")
+                    at(12.0, visibleY[visibleY.size / 2L])
+                else
+                    at(150.0, visibleY[0L])
+                assertTrue(a.byteOffset != b.byteOffset)
+                val selection = CodeSelection(a, b)
+                chosen = Some(selection)
+                stamp = MonotonicTimeSource.now()
+                editor.setSelections([selection])
+            }
+
+            case 6 -> {
+                run.report("visible-selection-to-frame", stamp)
                 val search = CodeFind(editor, "XY")
                 find = Some(search)
                 assertEquals(100L, search.matches.size)
@@ -213,14 +311,14 @@ private class PerformanceWindow(val run: EditorMeasurements, val editor: CodeEdi
                 assertEquals(CodeEditResult.Applied, search.replaceAll())
             }
 
-            case 6 -> {
+            case 7 -> {
                 run.report("replace-100-to-frame", stamp)
                 assertEquals(0L, find!!.matches.size)
                 stamp = MonotonicTimeSource.now()
                 assertEquals(CodeEditResult.Applied, editor.undo())
             }
 
-            case 7 -> {
+            case 8 -> {
                 run.report("undo-100-to-frame", stamp)
                 assertEquals(100L, find!!.matches.size)
                 val read = MonotonicTimeSource.now()

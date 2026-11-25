@@ -161,7 +161,7 @@ internal class ScoopTokenizer : CodeTokenizer {
                 i += 1L
                 while (nameByte(bytes.ascii(i)) || digit(bytes.ascii(i)))
                     i += 1L
-                val word = text.utf8Slice(Utf8Range(a, i))
+                val word = textFromLineBytes(bytes, a, i)
                 if (c == 64)
                     category = "annotation"
                 else if (word == "true" || word == "false" || word == "None")
