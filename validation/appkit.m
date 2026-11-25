@@ -24,6 +24,7 @@ int scoop_editor_appkit_probe(void *rawView, int step) {
         if ([view attributedSubstringForProposedRange:NSMakeRange(5, 1) actualRange:&actual]) return 3;
         id field = editorField(view, @"一\r\nA🙂B\r\n末");
         if (!field || !NSEqualRanges([field accessibilitySelectedTextRange], NSMakeRange(6, 0))) return 4;
+        if (![[field accessibilityRole] isEqualToString:NSAccessibilityTextAreaRole]) return 11;
         NSRect caret = [view firstRectForCharacterRange:view.selectedRange actualRange:&actual];
         if (NSIsEmptyRect(caret)) return 5;
         [view setMarkedText:@"候\n选" selectedRange:NSMakeRange(3, 0) replacementRange:NSMakeRange(1, 2)];

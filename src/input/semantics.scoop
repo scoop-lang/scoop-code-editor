@@ -14,6 +14,7 @@ internal fun EditorInk.syncSemantics() {
     val s = editor.selections.primary
     val properties = SemanticProperties(
         name = Some("Code editor"), value = Some(semanticValue), readOnly = editor.readOnly,
+        multiline = true,
         selection = Some(Utf8Selection(s.anchor.byteOffset, s.cursor.byteOffset)),
         cursorAffinity = if (s.cursor.affinity == TextAffinity.Upstream)
             SemanticTextAffinity.Upstream
@@ -42,17 +43,7 @@ internal fun EditorInk.syncSemantics() {
                 replaceText = if (editor.readOnly)
                     None
                 else
-                    Some({ r, text -> semanticReplace(r, text) }),
-                revealText = Some(
-                    { r, _ ->
-                        if (!validRange(doc.root, r))
-                            SemanticActionResult.InvalidArgument
-                        else {
-                            editor.revealRange(r);
-                            SemanticActionResult.Completed
-                        }
-                    }
-                )
+                    Some({ r, text -> semanticReplace(r, text) })
             )
         )
 }
