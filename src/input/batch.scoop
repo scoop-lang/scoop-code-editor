@@ -1,0 +1,86 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+internal fun inputRevision(state: TextInputState, revision: Long): TextInputState = TextInputState(
+    state.surroundingText,
+    state.selection,
+    state.markedRange,
+    state.caretRect,
+    revision
+)
+
+private fun targetRange(previous: TextInputState, target: TextReplacement): Utf8Range = when (target
+) {
+    case CurrentSelection -> previous.markedRange ?: previous.selection.range
+    case Range(val r) -> r
+}
+
+internal class NativeBatch(
+    var base: TextInputState,
+    var visible: TextInputState,
+    var preedit: NativeDraft?
+) {
+    internal var written = NativeDraft(base.surroundingText)
+    internal var wasComposition = visible.markedRange != None
+
+    private fun finish(next: TextInputState, draft: NativeDraft) {
+        written = if (visible.markedRange != None) draft.applyTo(written) else draft
+        preedit = None
+        visible = next
+        base = next
+    }
+
+    internal fun operation(op: TextInputOperation) {
+        val previous = visible
+        val next = previous.apply(TextInputBatch(None, [op]))
+        when (op) {
+            case Preedit(val text, _, val replacement) -> {
+                wasComposition = true
+                if (text.byteLength == 0L) {
+                    preedit = None
+                    visible = base
+                } else {
+                    val draft = preedit ?: NativeDraft(base.surroundingText)
+                    preedit = Some(draft.replace(targetRange(previous, replacement), text))
+                    visible = next
+                }
+            }
+
+            case Commit(val text, val replacement) -> {
+                val draft = preedit ?: written
+                finish(next, draft.replace(targetRange(previous, replacement), text))
+            }
+
+            case ClearPreedit -> finish(next, preedit ?: written)
+
+            case DeleteSurrounding(val before, val after) -> {
+                val r = previous.selection.range
+                val draft = preedit ?: written
+                finish(
+                    next,
+                    draft
+                        .replace(Utf8Range(r.end, r.end + after), "")
+                        .replace(Utf8Range(r.start - before, r.start), "")
+                )
+            }
+
+            case SetSelection(_) -> {
+                visible = next
+                if (next.markedRange == None) base = next
+            }
+        }
+    }
+}
+
+internal fun ordinaryTyping(operations: Array<TextInputOperation>): String? {
+    if (operations.size == 0L) return None
+    val text = StringBuilder()
+    for (op in operations) {
+        when (op) {
+            case Commit(val inserted, TextReplacement.CurrentSelection) -> text.append(inserted)
+            else -> return None
+        }
+    }
+    return Some(text.toString())
+}

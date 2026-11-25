@@ -1,0 +1,123 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.text.repeat
+import scoop.window.*
+
+private fun EditorInputSession.batch(operations: List<TextInputOperation>): NativeReply = accept(
+    TextInputBatch(Some(state.revision), operations)
+)!!
+
+private fun pre(text: String): TextInputOperation = TextInputOperation
+    .Preedit(text, None, TextReplacement.CurrentSelection)
+
+private fun commit(text: String): TextInputOperation = TextInputOperation
+    .Commit(text, TextReplacement.CurrentSelection)
+
+@Test
+private class EditorInputTests {
+    @Test
+    fun localLineAndCrossLineSelectionUseDocumentBytes() {
+        val doc = CodeDocument("一\r\nA🙂B\r\n末")
+        val editor = CodeEditorState(doc)
+        editor.setSelections([CodeSelection.caret(10L)])
+        val session = EditorInputSession(editor)
+        assertEquals(5L, session.start)
+        assertEquals("A🙂B", session.state.surroundingText)
+        session.batch([TextInputOperation.Commit("中", TextReplacement.Range(Utf8Range(1L, 5L)))])
+        assertEquals("一\r\nA中B\r\n末", doc.read(Utf8Range(0L, doc.byteLength)))
+        editor.setSelections([CodeSelection.offsets(doc.byteLength, 6L)])
+        session.synchronize()
+        assertEquals("A中B\r\n末", session.state.surroundingText)
+        assertEquals(1L, session.state.selection.cursor)
+        assertEquals(10L, session.state.selection.anchor)
+    }
+
+    @Test
+    fun preeditCanSpanLinesWithoutTouchingSharedHistory() {
+        val doc = CodeDocument("ab")
+        val editor = CodeEditorState(doc)
+        val other = CodeEditorState(doc)
+        editor.setSelections([CodeSelection.offsets(1L, 2L)])
+        val session = EditorInputSession(editor)
+        session.batch([pre("中\n文")])
+        assertEquals(0L, doc.version)
+        assertEquals(2L, session.preview!!.lineCount)
+        assertEquals("ab", other.document.read(other.document.lineRange(0L)))
+        session.batch([pre("")])
+        assertFalse(session.composing)
+        assertEquals(0L, doc.version)
+        assertEquals(1L, editor.selections.primary.anchor.byteOffset)
+        session.batch([pre("字"), TextInputOperation.ClearPreedit])
+        assertEquals("a字", doc.read(doc.lineRange(0L)))
+        assertEquals(1L, doc.version)
+        other.undo()
+        assertEquals("ab", doc.read(doc.lineRange(0L)))
+        assertEquals(1L, other.selections.primary.anchor.byteOffset)
+    }
+
+    @Test
+    fun orderedBatchCommitsOnceAndKeepsNextCompositionPrivate() {
+        val doc = CodeDocument("abcde")
+        val editor = CodeEditorState(doc)
+        val session = EditorInputSession(editor)
+        session
+            .batch(
+                [
+                    TextInputOperation.Commit("XY", TextReplacement.Range(Utf8Range(1L, 2L))),
+                    TextInputOperation.SetSelection(Utf8Selection(4L, 5L)),
+                    pre("临")
+                ]
+            )
+        assertEquals("aXYcde", doc.read(doc.lineRange(0L)))
+        assertEquals("aXYc临e", session.state.surroundingText)
+        assertEquals(1L, doc.version)
+        session.batch([pre("候"), commit("正")])
+        assertEquals("aXYc正e", doc.read(doc.lineRange(0L)))
+        assertEquals(2L, doc.version)
+        editor.undo()
+        assertEquals("aXYcde", doc.read(doc.lineRange(0L)))
+    }
+
+    @Test
+    fun ordinaryTypingUsesAllCaretsExplicitEditUsesPrimaryAndStaleInputIsRejected() {
+        val doc = CodeDocument("aa\naa")
+        val editor = CodeEditorState(doc)
+        editor.setSelections([CodeSelection.caret(1L), CodeSelection.caret(4L)], 1L)
+        val session = EditorInputSession(editor)
+        val oldRevision = session.state.revision
+        val ack = session.batch([commit("x")])
+        assertEquals("axa", ack.acknowledgement.surroundingText)
+        assertEquals("axa\naxa", doc.read(Utf8Range(0L, doc.byteLength)))
+        assertEquals(4L, session.start)
+        assertTrue(ack.context!!.revision > ack.acknowledgement.revision)
+        assertTrue(
+            session.accept(TextInputBatch(Some(oldRevision), [commit("!")]))?.acknowledgement ==
+                None
+        )
+        session.batch([TextInputOperation.DeleteSurrounding(1L, 0L)])
+        assertEquals("axa\naa", doc.read(Utf8Range(0L, doc.byteLength)))
+        session.batch([pre("在")])
+        doc.applyEdits(doc.version, [CodeEdit(Utf8Range(0L, 0L), "!")])
+        assertTrue(session.accept(TextInputBatch(None, [commit("迟")]))?.acknowledgement == None)
+        session.synchronize()
+        assertFalse(session.composing)
+    }
+
+    @Test
+    fun equalLinesAndRemoteDocumentSizeDoNotConfuseNativeContext() {
+        val doc = CodeDocument("x\nx\n" + "remote\n".repeat(10000L))
+        val editor = CodeEditorState(doc)
+        val session = EditorInputSession(editor)
+        val before = session.state.revision
+        editor.setSelections([CodeSelection.caret(2L)])
+        session.synchronize()
+        assertEquals(2L, session.start)
+        assertTrue(session.state.revision > before)
+        assertEquals("x", session.state.surroundingText)
+        val reply = session.batch([commit("\n")])
+        assertEquals("\nx", reply.acknowledgement.surroundingText)
+        assertEquals("x", reply.context!!.surroundingText)
+        assertEquals(3L, session.start)
+    }
+}

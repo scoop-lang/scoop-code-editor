@@ -1,0 +1,90 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+private class NativeSpan(val source: Long?, val text: String)
+
+// Original spans retain their offsets even when repeated text surrounds an IME replacement.
+internal class NativeDraft private constructor(
+    private val spans: Array<NativeSpan>,
+    private val sourceSize: Long
+) {
+    internal constructor(text: String) : this(
+        if (text.byteLength == 0L) [] else [NativeSpan(Some(0L), text)],
+        text.byteLength
+    ) {}
+
+    private fun copyRange(output: ArrayList<NativeSpan>, start: Long, end: Long) {
+        var pos = 0L
+        for (span in spans) {
+            if (pos >= end) break
+            val next = pos + span.text.byteLength
+            if (next > start && end > pos) {
+                val a = if (pos < start) start - pos else 0L
+                val b = if (end < next) end - pos else next - pos
+                if (a == 0L && b == span.text.byteLength)
+                    output.add(span)
+                else if (b > a)
+                    output
+                        .add(
+                            NativeSpan(
+                                when (span.source) {
+                                    case Some(val offset) -> Some(offset + a);
+                                    case None -> None
+                                },
+                                span.text.utf8Slice(Utf8Range(a, b))
+                            )
+                        )
+            }
+            pos = next
+        }
+    }
+
+    internal fun replace(range: Utf8Range, text: String): NativeDraft {
+        val result = ArrayList<NativeSpan>()
+        copyRange(result, 0L, range.start)
+        if (text.byteLength > 0L) result.add(NativeSpan(None, text))
+        copyRange(result, range.end, Long.MAX_VALUE)
+        return NativeDraft(result.toArray(), sourceSize)
+    }
+
+    internal fun edits(start: Long): Array<CodeEdit> {
+        val result = ArrayList<CodeEdit>()
+        var old = 0L
+        var pending = StringBuilder()
+        var hasText = false
+        for (span in spans) {
+            when (span.source) {
+                case Some(val pos) -> {
+                    if (pos != old || hasText) {
+                        result
+                            .add(CodeEdit(Utf8Range(start + old, start + pos), pending.toString()))
+                        pending = StringBuilder()
+                        hasText = false
+                    }
+                    old = pos + span.text.byteLength
+                }
+
+                case None -> {
+                    pending.append(span.text);
+                    hasText = true
+                }
+            }
+        }
+        if (old != sourceSize || hasText)
+            result.add(CodeEdit(Utf8Range(start + old, start + sourceSize), pending.toString()))
+        return result.toArray()
+    }
+
+    internal fun applyTo(base: NativeDraft): NativeDraft {
+        var output = base
+        val edits = edits(0L)
+        var i = edits.size
+        while (i > 0L) {
+            i -= 1L;
+            val e = edits[i];
+            output = output.replace(e.range, e.text)
+        }
+        return output
+    }
+}

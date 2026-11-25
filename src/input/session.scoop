@@ -1,0 +1,157 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+internal class NativeReply(val acknowledgement: TextInputState, val context: TextInputState?)
+
+internal class EditorInputSession(val editor: CodeEditorState) {
+    private val doc = editor.document
+    internal var start: Long = 0L
+    internal var version: Long = -1L
+    internal var state = TextInputState("", Utf8Selection(0L, 0L))
+    private var base = state
+    private var preedit: NativeDraft? = None
+    internal var applying = false
+    internal val composing: Boolean get() = state.markedRange != None
+    internal var preview: CodeSnapshot? = None
+    internal var previewMap: CodeEditMap? = None
+    internal var reverseMap: CodeEditMap? = None
+
+    init {
+        synchronize(true)
+    }
+
+    internal fun synchronize(force: Boolean = false): Boolean {
+        val selection = editor.selections.primary
+        val range = selection.range
+        val first = doc.lineRange(doc.positionAt(range.start).line).start
+        val last = doc.lineRange(doc.positionAt(range.end).line).end
+        val a = selection.anchor.byteOffset - first
+        val b = selection.cursor.byteOffset - first
+        if (!force &&
+            version ==
+            doc.version &&
+            start ==
+            first &&
+            a ==
+            base.selection.anchor &&
+            b ==
+            base.selection.cursor
+        )
+            return false
+        val text = doc.read(Utf8Range(first, if (last >= range.end) last else range.end))
+        val changed = force ||
+            composing ||
+            start !=
+            first ||
+            base.surroundingText !=
+            text ||
+            base.selection.anchor !=
+            a ||
+            base.selection.cursor !=
+            b
+        start = first
+        version = doc.version
+        if (changed) {
+            preedit = None
+            preview = None
+            previewMap = None
+            reverseMap = None
+            state = TextInputState(text, Utf8Selection(a, b), revision = state.revision + 1L)
+            base = state
+        }
+        return changed
+    }
+
+    internal fun accept(batch: TextInputBatch): NativeReply? {
+        if (applying ||
+            editor.closed ||
+            editor.readOnly ||
+            version !=
+            doc.version ||
+            (batch.baseRevision != None && batch.baseRevision != Some(state.revision))
+        )
+            return None
+        val work = NativeBatch(base, state, preedit)
+        try {
+            for (op in batch.operations)
+                work.operation(op)
+        } catch (invalid: Exception) {
+            return None
+        }
+        val typing = if (composing) None else ordinaryTyping(batch.operations)
+        applying = true
+        try {
+            val result = when (typing) {
+                case Some(val text) -> editor.replaceSelections(text)
+                case None -> applyPrimary(work)
+            }
+            if (result != CodeEditResult.Applied && result != CodeEditResult.Unchanged) return None
+            val revision = state.revision + 1L
+            state = inputRevision(work.visible, revision)
+            base = inputRevision(work.base, revision)
+            version = doc.version
+            preedit = work.preedit
+            rebuildPreview()
+            val ack = state
+            // Acknowledge against the old fragment before publishing its successor.
+            val switched = if (composing) false else refreshAfterBatch()
+            return Some(NativeReply(ack, if (switched) Some(state) else None))
+        } finally {
+            applying = false
+        }
+    }
+
+    private fun refreshAfterBatch(): Boolean {
+        val saved = version
+        version = -1L
+        val changed = synchronize()
+        version = saved
+        return changed
+    }
+
+    private fun applyPrimary(work: NativeBatch): CodeEditResult {
+        val before = editor.selections
+        val edits = work.written.edits(start)
+        val selection = work.base.selection
+        if (edits.size ==
+            0L &&
+            selection.anchor ==
+            base.selection.anchor &&
+            selection.cursor ==
+            base.selection.cursor
+        )
+            return CodeEditResult.Unchanged
+        return editor
+            .executeEdits(
+                doc.version,
+                edits,
+                Some(
+                    { map ->
+                        val mapped = map.mapSelections(before)
+                        val values = Array<CodeSelection>(mapped.values.size) { i ->
+                            if (i == before.primaryIndex)
+                                CodeSelection
+                                    .offsets(start + selection.anchor, start + selection.cursor)
+                            else
+                                mapped.values[i]
+                        }
+                        CodeSelections(values, before.primaryIndex)
+                    }
+                ),
+                if (work.wasComposition) CodeEditKind.Composition else CodeEditKind.Command
+            )
+    }
+
+    private fun rebuildPreview() {
+        preview = None
+        previewMap = None
+        reverseMap = None
+        val overlay = preedit ?: return
+        val edits = overlay.edits(start)
+        val plan = prepareEdits(doc, edits)!!
+        preview = Some(CodeSnapshot(plan.root, doc.version))
+        previewMap = Some(plan.mapping)
+        reverseMap = Some(CodeEditMap(inverseChanges(plan.mapping.changes), []))
+    }
+}
