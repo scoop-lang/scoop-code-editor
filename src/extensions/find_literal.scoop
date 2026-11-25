@@ -1,0 +1,39 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+private class LiteralMatcher(val needle: Array<Byte>) {
+    private val prefix = MutableArray<Long>(needle.size) { _ -> 0L }
+    private var offset = 0L
+    private var matched = 0L
+    internal val ranges = ArrayList<Utf8Range>()
+
+    init {
+        var count = 0L
+        for (i in 1L..<needle.size) {
+            while (count > 0L && needle[count] != needle[i])
+                count = prefix[count - 1L]
+            if (needle[count] == needle[i]) count += 1L
+            prefix[i] = count
+        }
+    }
+    internal fun consume(text: String) {
+        for (byte in text.toByteArray()) {
+            while (matched > 0L && needle[matched] != byte)
+                matched = prefix[matched - 1L]
+            if (needle[matched] == byte) matched += 1L
+            offset += 1L
+            if (matched == needle.size) {
+                ranges.add(Utf8Range(offset - matched, offset));
+                matched = 0L
+            }
+        }
+    }
+}
+
+public fun findLiteral(snapshot: CodeSnapshot, query: String): Array<Utf8Range> {
+    if (query.byteLength == 0L) return []
+    val matcher = LiteralMatcher(query.toByteArray())
+    snapshot.forEachChunk { part -> matcher.consume(part) }
+    return matcher.ranges.toArray()
+}

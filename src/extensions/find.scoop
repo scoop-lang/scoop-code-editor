@@ -1,203 +1,230 @@
 package scoop.ui.editor
 
 import scoop.graphics.Color
+import scoop.regex.RegexSyntaxException
+import scoop.ui.*
 import scoop.window.*
 
-private class LiteralMatcher(val needle: Array<Byte>) {
-    private val prefix = MutableArray<Long>(needle.size) { _ -> 0L }
-    private var offset = 0L
-    private var matched = 0L
-    internal val ranges = ArrayList<Utf8Range>()
-
-    init {
-        var count = 0L
-        for (i in 1L..<needle.size) {
-            while (count > 0L && needle[count] != needle[i])
-                count = prefix[count - 1L]
-            if (needle[count] == needle[i]) count += 1L
-            prefix[i] = count
-        }
-    }
-    internal fun consume(text: String) {
-        for (byte in text.toByteArray()) {
-            while (matched > 0L && needle[matched] != byte)
-                matched = prefix[matched - 1L]
-            if (needle[matched] == byte) matched += 1L
-            offset += 1L
-            if (matched == needle.size) {
-                ranges.add(Utf8Range(offset - matched, offset));
-                matched = 0L
-            }
-        }
-    }
-}
-
-public fun findLiteral(snapshot: CodeSnapshot, query: String): Array<Utf8Range> {
-    if (query.byteLength == 0L) return []
-    val matcher = LiteralMatcher(query.toByteArray())
-    snapshot.forEachChunk { part -> matcher.consume(part) }
-    return matcher.ranges.toArray()
-}
-
-/** A view-local literal search implemented with document snapshots, actions and decorations. */
+/** Search results and the panel are local to one editor view. */
 public class CodeFind public constructor(
     public val editor: CodeEditorState,
     initialQuery: String = ""
 ) : Closeable {
-    private var text = initialQuery
-    private var found: Array<Utf8Range> = []
-    private var revision = -1L
-    private var closed = false
     private val highlights = editor.decorations()
     private val lifetime = ArrayList<Closeable>()
     private var panel: Closeable? = None
+    private var region: Array<Utf8Range>? = None
+    private var hits: Array<SearchHit> = []
+    private var revision = -1L
+    private var closed = false
+    private var pattern = initialQuery
+    private var settings = CodeFindOptions()
+    internal val displayRevision = state(0L)
     public var replacement = ""
-    public val matches: Array<Utf8Range> get() = found
+    private var problem: String? = None
+    public val error: String? get() = problem
+    public val matches: Array<Utf8Range> get() = Array<Utf8Range>(hits.size) { i -> hits[i].range }
+    public val matchCount: Long get() = hits.size
+    public val currentMatch: Long get() = currentIndex() + 1L
+    public val inSelection: Boolean
+        get() = when (region) {
+            case Some(_) -> true;
+            case None -> false
+        }
     public var query: String
-        get() = text
+        get() = pattern
         set(value) {
-            if (!closed && text != value) {
-                text = value;
+            if (!closed && value != pattern) {
+                pattern = value;
+                refresh()
+            }
+        }
+    public var options: CodeFindOptions
+        get() = settings
+        set(value) {
+            if (!closed && settings != value) {
+                settings = value;
                 refresh()
             }
         }
 
     init {
-        try {
-            lifetime
-                .add(
-                    editor
-                        .addAction(
-                            "find.open",
-                            "Find",
-                            Some(
-                                ShortcutChord(
-                                    ShortcutKey.Logical(LogicalKey.Character("f")),
-                                    ShortcutModifiers(primary = true)
+        if (editor.closed || editor.activeFind?.matchCount != None)
+            throw IllegalStateException(Some("a view can own one live search"))
+        editor.activeFind = Some(this)
+        lifetime
+            .add(
+                editor
+                    .document
+                    .onChange { change ->
+                        when (region) {
+                            case Some(val scopes) ->
+                                region = Some(
+                                    Array<Utf8Range>(scopes.size) { i ->
+                                        Utf8Range(
+                                            change
+                                                .mapping
+                                                .map(scopes[i].start, CodeStickiness.Before),
+                                            change.mapping.map(scopes[i].end)
+                                        )
+                                    }
                                 )
-                            )
-                        ) { _ -> openPanel() }
-                )
-            lifetime
-                .add(
-                    editor
-                        .addAction("find.next", "Find next", enabled = { _ -> found.size > 0L }) {
-                            _
-                            ->
-                            next()
+                            case None -> {}
                         }
-                )
-            lifetime
-                .add(
-                    editor
-                        .addAction(
-                            "find.addNext",
-                            "Select next occurrence",
-                            enabled = { _ -> found.size > 0L }
-                        ) { _ -> next(true) }
-                )
-            lifetime
-                .add(
-                    editor
-                        .addAction(
-                            "find.replace",
-                            "Replace",
-                            enabled = { e -> !e.readOnly && found.size > 0L }
-                        ) { _ -> replaceCurrent() }
-                )
-            lifetime
-                .add(
-                    editor
-                        .addAction(
-                            "find.replaceAll",
-                            "Replace all",
-                            enabled = { e -> !e.readOnly && found.size > 0L }
-                        ) { _ -> replaceAll() }
-                )
-            lifetime.add(editor.document.onChange { _ -> refresh() })
-            refresh()
-        } catch (error: Throwable) {
-            close();
-            throw error
-        }
+                        refresh()
+                    }
+            )
+        lifetime.add(editor.onSelectionChange { _ -> displayRevision.value += 1L })
+        refresh()
+    }
+
+    public fun restrictToSelections(enabled: Boolean): Boolean {
+        if (closed) return false
+        if (enabled) {
+            val scopes = ArrayList<Utf8Range>()
+            for (s in editor.selections.values)
+                if (s.range.start < s.range.end) scopes.add(s.range)
+            if (scopes.size == 0L) return false
+            region = Some(scopes.toArray())
+        } else
+            region = None
+        refresh()
+        return true
     }
 
     private fun refresh() {
-        val doc = editor.document
-        val query = text
-        if (query.byteLength == 0L) {
-            found = [];
-            revision = doc.version;
-            highlights.clear();
+        if (pattern.byteLength == 0L) {
+            revision = editor.document.version
+            problem = None
+            if (hits.size > 0L) highlights.clear()
+            hits = []
+            displayRevision.value += 1L
             return
         }
-        val snapshot = doc.snapshot()
-        val ranges = findLiteral(snapshot, query)
-        if (closed || doc.version != snapshot.version || query != text) return
-        found = ranges
-        revision = snapshot.version
+        val snap = editor.document.snapshot()
+        problem = None
+        hits = try {
+            searchSnapshot(snap, pattern, settings, region)
+        } catch (e: RegexSyntaxException) {
+            problem = Some(e.detail);
+            []
+        }
+        revision = snap.version
         val style = CodeDecorationStyle(background = Some(Color(0.99, 0.78, 0.25, 0.55)))
-        highlights.set(Array<CodeDecoration>(ranges.size) { i -> CodeDecoration(ranges[i], style) })
+        highlights
+            .set(Array<CodeDecoration>(hits.size) { i -> CodeDecoration(hits[i].range, style) })
+        displayRevision.value += 1L
     }
 
-    public fun next(addSelection: Boolean = false): Boolean {
-        if (closed || found.size == 0L || revision != editor.document.version) return false
-        val before = editor.selections
-        val end = before.primary.range.end
-        var start = 0L
-        while (start < found.size && found[start].start < end)
-            start += 1L
-        for (i in 0L..<found.size) {
-            val range = found[(start + i) % found.size]
+    private fun currentIndex(): Long {
+        val selection = editor.selections.primary.range
+        var low = 0L
+        var high = hits.size
+        while (low < high) {
+            val m = low + (high - low) / 2L
+            if (hits[m].range.start < selection.start) low = m + 1L else high = m
+        }
+        var i = low
+        while (i < hits.size && hits[i].range.start == selection.start) {
+            if (hits[i].range == selection) return i
+            i += 1L
+        }
+        return -1L
+    }
+
+    private fun visit(backward: Boolean, append: Boolean, skip: Boolean): Boolean {
+        if (closed || hits.size == 0L || revision != editor.document.version) return false
+        val old = editor.selections
+        val step = if (backward) -1L else 1L
+        val current = currentIndex()
+        var index = current + step
+        if (current < 0L) {
+            index = if (backward) hits.size - 1L else 0L
+            if (backward) {
+                while (index >= 0L && hits[index].range.end > old.primary.range.start)
+                    index -= 1L
+            } else {
+                while (index < hits.size && hits[index].range.start < old.primary.range.end)
+                    index += 1L
+            }
+        }
+        for (i in 0L..<hits.size) {
+            index = (index + hits.size) % hits.size
+            val r = hits[index].range
             val values = ArrayList<CodeSelection>()
             var present = false
-            if (addSelection)
-                for (s in before.values) {
-                    values.add(s);
-                    if (s.range == range) present = true
+            if (append || skip)
+                for (j in 0L..<old.values.size) {
+                    val s = old.values[j]
+                    if (s.range == r) present = true
+                    if (!skip || j != old.primaryIndex) values.add(s)
                 }
-            if (present) continue
-            values.add(CodeSelection.offsets(range.start, range.end))
-            editor.setSelections(values, values.size - 1L)
-            editor.revealRange(range)
-            return true
+            if (!present) {
+                values.add(CodeSelection.offsets(r.start, r.end))
+                editor.setSelections(values, values.size - 1L)
+                editor.revealRange(r)
+                return true
+            }
+            index += step
         }
         return false
+    }
+
+    public fun next(addSelection: Boolean = false): Boolean = visit(false, addSelection, false)
+    public fun previous(addSelection: Boolean = false): Boolean = visit(true, addSelection, false)
+    public fun skip(backward: Boolean = false): Boolean = visit(backward, false, true)
+    public fun selectAllMatches(): Boolean {
+        if (closed || hits.size == 0L) return false
+        val current = currentIndex()
+        editor
+            .setSelections(
+                Array<CodeSelection>(hits.size) { i ->
+                    val r = hits[i].range
+                    CodeSelection.offsets(r.start, r.end)
+                },
+                if (current < 0L) 0L else current
+            )
+        editor.revealRange(editor.selections.primary.range)
+        return true
     }
 
     public fun replaceCurrent(): CodeEditResult {
         if (closed) return CodeEditResult.Invalid
         if (editor.readOnly) return CodeEditResult.ReadOnly
-        val current = editor.selections.primary.range
-        for (r in found) {
-            if (r == current)
-                return editor
-                    .executeEdits(
-                        revision, [CodeEdit(r, replacement)],
-                        Some(
-                            { map ->
-                                CodeSelections([CodeSelection.caret(map.insertedRange(0L).end)])
-                            }
-                        )
-                    )
-        }
-        return CodeEditResult.Unchanged
+        val index = currentIndex()
+        if (index < 0L) return CodeEditResult.Unchanged
+        val hit = hits[index]
+        return editor
+            .executeEdits(
+                revision, [CodeEdit(hit.range, hit.expandReplacement(replacement, settings.regex))],
+                Some({ map -> CodeSelections([CodeSelection.caret(map.insertedRange(0L).end)]) })
+            )
     }
 
     public fun replaceAll(): CodeEditResult {
         if (closed) return CodeEditResult.Invalid
-        val edits = Array<CodeEdit>(found.size) { i -> CodeEdit(found[i], replacement) }
+        val edits = ArrayList<CodeEdit>()
+        for (hit in hits) {
+            val text = hit.expandReplacement(replacement, settings.regex)
+            val last = edits.size - 1L
+            if (last >= 0L && edits[last].range.start == hit.range.start)
+                edits[last] = CodeEdit(hit.range, edits[last].text + text)
+            else
+                edits.add(CodeEdit(hit.range, text))
+        }
         return editor.executeEdits(revision, edits)
     }
 
     public fun openPanel() {
         if (closed) return
+        val r = editor.selections.primary.range
+        if (r.end > r.start) query = editor.document.read(r)
         panel?.close()
         panel = Some(editor.addOverlayWidget(CodeEditorCorner.TopRight, findPanel(this)))
     }
     public fun closePanel() {
-        panel?.close();
-        panel = None;
+        panel?.close()
+        panel = None
         editor.requestFocus()
     }
     public override fun close() {
@@ -209,6 +236,7 @@ public class CodeFind public constructor(
             handle.close()
         lifetime.clear()
         highlights.close()
-        found = []
+        hits = []
+        editor.activeFind = None
     }
 }

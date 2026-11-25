@@ -17,6 +17,7 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
     }
     public override fun render(): View {
         val search = find
+        search.displayRevision.value
         val focus = searchFocus
         val query = input(queryField) {
             label = "Find";
@@ -31,18 +32,42 @@ private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(s
             onEdited = { field -> search.replacement = field.text }
             onSubmit = { _ -> search.editor.runAction("find.replace") }
         }
-        val next = button("Next", { search.editor.runAction("find.next") })
-        val current = button("Replace", { search.editor.runAction("find.replace") })
-        val all = button("All", { search.editor.runAction("find.replaceAll") })
-        val close = button("Close", { search.closePanel() })
+        val opts = search.options
+        val flags = row {
+            button(
+                if (opts.matchCase) "Aa ✓" else "Aa",
+                { search.options = CodeFindOptions(!opts.matchCase, opts.wholeWord, opts.regex) }
+            )
+            button(
+                if (opts.wholeWord) "Word ✓" else "Word",
+                { search.options = CodeFindOptions(opts.matchCase, !opts.wholeWord, opts.regex) }
+            )
+            button(
+                if (opts.regex) "Regex ✓" else "Regex",
+                { search.options = CodeFindOptions(opts.matchCase, opts.wholeWord, !opts.regex) }
+            )
+            button(
+                if (search.inSelection) "Selection ✓" else "Selection",
+                { search.restrictToSelections(!search.inSelection) }
+            )
+        }
+        val navigation = row {
+            label(
+                search.error ?:
+                    (search.currentMatch.toString() + " / " + search.matchCount.toString())
+            )
+            button("Previous", { search.previous() })
+            button("Next", { search.next() })
+        }
         val actions = row {
-            item(next);
-            item(current);
-            item(all);
-            item(close)
+            button("Replace", { search.editor.runAction("find.replace") })
+            button("Replace all", { search.editor.runAction("find.replaceAll") })
+            button("Close", { search.closePanel() })
         }
         return column {
             item(query);
+            item(navigation);
+            item(flags);
             item(replacement);
             item(actions)
         }

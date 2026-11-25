@@ -12,6 +12,7 @@ kind = "library"
 "scoop:scoop.window" = "0.1.0"
 
 "scoop:scoop.charset" = "0.1.0"
+"scoop:scoop.regex" = "0.1.0"
 "scoop:scoop.graphics.text" = "0.1.0"
 
 "scoop:scoop.graphics" = "0.1.0"

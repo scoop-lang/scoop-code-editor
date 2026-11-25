@@ -1,0 +1,103 @@
+package scoop.ui.editor
+
+import scoop.regex.Regex
+import scoop.window.*
+
+internal fun CodeDocument.wordRangeAt(offset: Long, pattern: String): Utf8Range {
+    val r = lineRange(positionAt(offset).line)
+    val row = read(r)
+    val offsets = ArrayList<Long>()
+    var total = r.start
+    for (ch in row) {
+        offsets.add(total);
+        total += scalarBytes(ch)
+    }
+    offsets.add(total)
+    return Regex(pattern)
+        .use { expr ->
+            var left = Utf8Range(offset, offset)
+            for (hit in expr.findAll(row)) {
+                val w = Utf8Range(offsets[hit.range.start], offsets[hit.range.endExclusive])
+                if (w.start > offset) break
+                if (w.start <= offset && offset < w.end) return@use w
+                if (w.end == offset) left = w
+            }
+            left
+        }
+}
+
+internal val defaultWordPattern: String get() = "[\\p{L}\\p{M}\\p{N}_]+"
+
+private fun CodeEditorState.matchFromSelection(
+    backward: Boolean,
+    all: Boolean,
+    skip: Boolean
+): Boolean {
+    val original = selections
+    val r = original.primary.range
+    val fromCaret = r.start == r.end
+    val word = if (fromCaret) document.wordRangeAt(r.start, defaultWordPattern) else r
+    if (word.start == word.end) return false
+    val controller = find
+    controller.options = CodeFindOptions(matchCase = true)
+    controller.query = document.read(word)
+    if (fromCaret) {
+        setSelections(
+            Array<CodeSelection>(original.values.size) { i ->
+                if (i == original.primaryIndex)
+                    CodeSelection.offsets(word.start, word.end)
+                else
+                    original.values[i]
+            },
+            original.primaryIndex
+        )
+        if (!all && !skip) return true
+    }
+    if (all) return controller.selectAllMatches()
+    if (skip) return controller.skip(backward)
+    return if (backward) controller.previous(true) else controller.next(true)
+}
+
+internal fun CodeEditorState.installFindActions() {
+    val primary = ShortcutModifiers(primary = true)
+    val shifted = ShortcutModifiers(primary = true, shift = true)
+    val hasMatches: (CodeEditorState) -> Boolean = { e -> (e.activeFind?.matchCount ?: 0L) > 0L }
+    val canReplace: (CodeEditorState) -> Boolean = { e -> !e.readOnly && hasMatches(e) }
+    addAction("find.open", "Find", characterShortcut("f", primary)) { e -> e.find.openPanel() }
+    addAction("find.next", "Next match", namedShortcut(NamedKey.F3), hasMatches) { e ->
+        e.find.next()
+    }
+    addAction(
+        "find.previous",
+        "Previous match",
+        namedShortcut(NamedKey.F3, ShortcutModifiers(shift = true)),
+        hasMatches
+    ) { e -> e.find.previous() }
+    addAction("find.addNext", "Add next match", enabled = hasMatches) { e -> e.find.next(true) }
+    addAction("find.addPrevious", "Add previous match", enabled = hasMatches) { e ->
+        e.find.previous(true)
+    }
+    addAction("find.replace", "Replace current match", enabled = canReplace) { e ->
+        e.find.replaceCurrent()
+    }
+    addAction("find.replaceAll", "Replace all", enabled = canReplace) { e -> e.find.replaceAll() }
+    addAction("find.selectAll", "Select all matches", enabled = hasMatches) { e ->
+        e.find.selectAllMatches()
+    }
+    addAction("selection.addNextMatch", "Add next occurrence", characterShortcut("d", primary)) {
+        e
+        ->
+        e.matchFromSelection(false, false, false)
+    }
+    addAction("selection.addPreviousMatch", "Add previous occurrence") { e ->
+        e.matchFromSelection(true, false, false)
+    }
+    addAction("selection.skipMatch", "Skip occurrence") { e ->
+        e.matchFromSelection(false, false, true)
+    }
+    addAction("selection.allMatches", "Select all occurrences", characterShortcut("l", shifted)) {
+        e
+        ->
+        e.matchFromSelection(false, true, false)
+    }
+}

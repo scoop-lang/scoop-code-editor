@@ -12,6 +12,8 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     private var current = CodeSelections([CodeSelection.caret(0L)])
     public val selections: CodeSelections get() = current
     internal val actions = ArrayList<EditorAction>()
+    internal var activeFind: CodeFind? = None
+    public val find: CodeFind get() = activeFind ?: CodeFind(this)
     internal val widgets = ArrayList<EditorWidget>()
     internal var widgetId = 0L
     internal val widgetList = state<Array<EditorWidget>>([])
@@ -70,6 +72,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     init {
         document.attach(this)
         installLineActions()
+        installFindActions()
     }
 
     public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents
@@ -111,6 +114,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         breakUndoGroup()
         document.detach(this)
         mounted?.stateClosed()
+        activeFind?.close()
         actions.clear()
         decorationStore.close()
         widgets.clear()

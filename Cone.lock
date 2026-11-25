@@ -354,6 +354,19 @@ kind = "sysroot"
 name = "scoop.platform"
 
 [[resolutions.nodes]]
+coordinate = "scoop:scoop.regex:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.std:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.regex"
+
+[[resolutions.nodes]]
 coordinate = "scoop:scoop.std:0.1.0"
 kind = "library"
 dependencies = ["scoop:scoop.core:0.1.0"]
@@ -423,6 +436,7 @@ dependencies = [
     "scoop:scoop.graphics.text:0.1.0",
     "scoop:scoop.graphics:0.1.0",
     "scoop:scoop.platform:0.1.0",
+    "scoop:scoop.regex:0.1.0",
     "scoop:scoop.std:0.1.0",
     "scoop:scoop.surface:0.1.0",
     "scoop:scoop.ui.component:0.1.0",

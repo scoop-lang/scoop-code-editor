@@ -1,0 +1,129 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.regex.*
+import scoop.window.Utf8Range
+
+public struct CodeFindOptions(
+    val matchCase: Boolean = true,
+    val wholeWord: Boolean = false,
+    val regex: Boolean = false
+)
+
+internal class SearchHit(val range: Utf8Range, val groups: MatchGroups? = None)
+
+internal fun searchSnapshot(
+    snapshot: CodeSnapshot,
+    query: String,
+    options: CodeFindOptions,
+    scope: Array<Utf8Range>?
+): Array<SearchHit> {
+    if (query.byteLength == 0L) return []
+    val hits = ArrayList<SearchHit>()
+    if (options.matchCase && !options.regex && !options.wholeWord) {
+        for (r in findLiteral(snapshot, query))
+            hits.add(SearchHit(r))
+    } else {
+        val literal = if (options.regex) query else Regex.escape(query)
+        val pattern = if (options.wholeWord) "(?<!\\w)(?:" + literal + ")(?!\\w)" else literal
+        val flags = if (options.matchCase)
+            setOf(RegexOption.Multiline)
+        else
+            setOf(RegexOption.IgnoreCase, RegexOption.Multiline)
+        Regex(pattern, flags)
+            .use { expr ->
+                val source = snapshot.read(Utf8Range(0L, snapshot.byteLength))
+                val offsets = ArrayList<Long>()
+                var offset = 0L
+                for (ch in source) {
+                    offsets.add(offset)
+                    offset += scalarBytes(ch)
+                }
+                offsets.add(offset)
+                for (m in expr.findAll(source)) {
+                    val r = m.range
+                    hits
+                        .add(
+                            SearchHit(
+                                Utf8Range(offsets[r.start], offsets[r.endExclusive]),
+                                Some(m.groups)
+                            )
+                        )
+                }
+            }
+    }
+    val regions = scope ?: return hits.toArray()
+    val matches = ArrayList<SearchHit>()
+    var index = 0L
+    for (hit in hits) {
+        while (index < regions.size && regions[index].end < hit.range.end)
+            index += 1L
+        if (index == regions.size) break
+        if (regions[index].start <= hit.range.start) matches.add(hit)
+    }
+    return matches.toArray()
+}
+
+internal fun SearchHit.expandReplacement(text: String, useGroups: Boolean): String {
+    if (!useGroups) return text
+    val captures = groups ?: return text
+    val chars = text.toCharArray()
+    val out = StringBuilder()
+    var index = 0L
+    while (index < chars.size) {
+        val ch = chars[index]
+        index += 1L
+        if (ch != '$' || index == chars.size) {
+            out.append(ch);
+            continue
+        }
+        val next = chars[index]
+        if (next == '$') {
+            out.append('$');
+            index += 1L;
+            continue
+        }
+        if (next == '&') {
+            out.append(captures[0L]!!.value);
+            index += 1L;
+            continue
+        }
+        if (next >= '0' && next <= '9') {
+            var number = (next.code - 48).toLong()
+            var end = index + 1L
+            if (end < chars.size && chars[end] >= '0' && chars[end] <= '9') {
+                val two = number * 10L + (chars[end].code - 48).toLong()
+                if (two < captures.size) {
+                    number = two;
+                    end += 1L
+                }
+            }
+            if (number < captures.size) {
+                out.append(captures[number]?.value ?: "")
+                index = end
+                continue
+            }
+        }
+        if (next == '{' || next == '<') {
+            val close = if (next == '{') '}' else '>'
+            var end = index + 1L
+            val name = StringBuilder()
+            while (end < chars.size && chars[end] != close) {
+                name.append(chars[end]);
+                end += 1L
+            }
+            if (end < chars.size && end > index + 1L) {
+                try {
+                    out.append(captures[name.toString()]?.value ?: "")
+                    index = end + 1L
+                    continue
+                } catch (error: IllegalArgumentException) {
+                    out.append('$');
+                    continue
+                }
+            }
+        }
+        out.append('$')
+    }
+    return out.toString()
+}

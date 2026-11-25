@@ -1,0 +1,58 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class AdvancedFindTests {
+    @Test
+    fun unicodeWholeWordSelectionAndRegexCaptures() {
+        val doc = CodeDocument("前 A12 xA34 A56 后\nA78")
+        val e = CodeEditorState(doc)
+        val f = e.find
+        e.setSelections([CodeSelection.offsets(0L, doc.lineRange(0L).end)])
+        assertTrue(f.restrictToSelections(true))
+        f.options = CodeFindOptions(matchCase = false, wholeWord = true, regex = true)
+        f.query = "a(?<digits>[0-9]+)"
+        assertEquals(2L, f.matchCount)
+        assertTrue(f.previous())
+        assertEquals(2L, f.currentMatch)
+        assertTrue(f.next())
+        assertEquals(1L, f.currentMatch)
+        f.replacement = "\${digits}:\$1"
+        assertEquals(CodeEditResult.Applied, f.replaceAll())
+        assertEquals("前 12:12 xA34 56:56 后\nA78", doc.read(Utf8Range(0L, doc.byteLength)))
+        e.undo()
+        assertEquals(2L, f.matchCount)
+        f.restrictToSelections(false)
+        assertEquals(3L, f.matchCount)
+        f.query = "("
+        assertTrue(f.error != None)
+        assertEquals(0L, f.matchCount)
+    }
+
+    @Test
+    fun zeroWidthMatchesAndOccurrenceCommandsAdvance() {
+        val doc = CodeDocument("one one one")
+        val e = CodeEditorState(doc)
+        val f = e.find
+        f.options = CodeFindOptions(regex = true)
+        f.query = "(?=one)"
+        assertTrue(f.next())
+        assertEquals(4L, e.selections.primary.cursor.byteOffset)
+        assertTrue(f.previous())
+        assertEquals(0L, e.selections.primary.cursor.byteOffset)
+        assertTrue(e.runAction("selection.addNextMatch"))
+        assertEquals(Utf8Range(0L, 3L), e.selections.primary.range)
+        e.runAction("selection.addNextMatch")
+        assertEquals(2L, e.selections.values.size)
+        e.runAction("selection.skipMatch")
+        assertEquals(Utf8Range(8L, 11L), e.selections.primary.range)
+        e.runAction("selection.allMatches")
+        assertEquals(3L, e.selections.values.size)
+        e.replaceSelections("四")
+        assertEquals("四 四 四", doc.read(doc.lineRange(0L)))
+        e.undo()
+        assertEquals(3L, e.selections.values.size)
+    }
+}
