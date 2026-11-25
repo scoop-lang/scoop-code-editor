@@ -1,6 +1,6 @@
 # Scoop 原生代码编辑器的 Monaco 基础功能清单
 
-2026-11-26。对照 Monaco Editor **0.58.0** 的公开声明、默认入口登记的 64 个模块，以及核心命令和独立组件的实现。Scoop 的交付状态以已合入主分支的 `8ce7696` 为准。下表按用户能执行的操作合并方向、平台快捷键和命令别名。文末附 64 个模块的去向，便于按名称查漏。[Monaco 发布版本][release] · [独立组件功能入口][features] · [公开 API][api] · [Scoop 组件合同](https://github.com/scoop-lang/scoop-code-editor/blob/8ce7696/docs/SPEC.md)
+2026-11-26。对照 Monaco Editor **0.58.0** 的公开声明、默认入口登记的 64 个模块，以及该版本使用的核心命令和视图实现。Scoop 的交付状态以编辑器主分支 `f069315` 为准。下表按用户能执行的操作合并方向、平台快捷键和命令别名。文末附 64 个模块的去向，便于按名称查漏。[Monaco 版本与对应源码提交][release] · [独立组件功能入口][features] · [公开 API][api] · [Scoop 组件合同](https://github.com/scoop-lang/scoop-code-editor/blob/f069315/docs/SPEC.md)
 
 **建议把“基础功能做全”分两批验收。** 第一批要让人只用键盘和鼠标就能完整地编辑一份源码。第二批要让宿主能为同一组件提供折叠、着色、字体和代码旁的交互内容。两批都属于编辑器组件范围。语言分析器可以独立选择。
 
@@ -9,20 +9,30 @@
 | 能力 | Scoop 当前可用 | 建议验收的范围 |
 | --- | --- | --- |
 | 文档与批量编辑 | **已有**。UTF-8 piece tree、按行和范围读取、固定版本快照、原子批量替换、位置映射、变更事件、显式转换 LF／CRLF。两个视图可共享同一文档 | 所有改写命令复用编辑事务，按编辑结果恢复选区。覆盖混合换行、尾部空行、跨片段编辑及过期版本 |
-| 光标移动与选择 | **已有常用操作**。字素、词、视觉行首尾、逻辑行首尾、上下移动、翻页、文档两端、Shift 扩选和全选。垂直移动保留目标横坐标 | Home 可在首个非空白与行首间切换。Esc 可收起选择或清除次光标。将这些动作开放给快捷键和宿主。逻辑行、折行后的视觉行分别验收 |
+| 光标移动与选择 | **已有常用操作**。字素、词、视觉行首尾、逻辑行首尾、上下移动、翻页、文档两端、Shift 扩选和全选。垂直移动保留目标横坐标。Home 可切换到首个非空白，Esc 可取消组字、清除次光标或收起主选区 | 补键盘逐次扩选整行。分别验收逻辑行、折行后的视觉行、混排双向文字及反向选区 |
 | 鼠标与列选 | **部分**。点击定位、拖选、Shift 点击、双击选词、三击或点行号选行、Alt 点击加光标 | 补按词／整行拖选、拖出视口自动滚动，以及键盘和鼠标的矩形列选。矩形按屏幕列命中，覆盖 Tab、宽字符、长短行混排 |
 | 多光标与多个选区 | **部分**。保存主次、方向和视觉偏向，去重并合并重叠选区。可批量键入、删除，从当前词或选区追加上／下一个匹配、跳过当前项或选择全部匹配 | 补上方／下方加光标、选中各行末尾加光标。验证矩形选区转成各行选区后，每条文本命令仍可一次撤销 |
 | 键入、删除与输入法 | **已有**。插入、覆盖选区、Enter、前后删除字素、按词和行边界删除。普通键入作用于所有选区，原生组合编辑跟随主选区 | 保留组合串更新、提交、取消及候选窗定位。覆盖 emoji、组合字符、中日韩输入和多行粘贴。主选区跨行时输入法上下文覆盖这些逻辑行。超长单行单独测量 |
-| 剪贴板 | **部分**。系统纯文本剪切／复制／粘贴，多选区复制按 LF 拼接，粘贴向每个选区写入同一文本 | 补空选区整行剪切／复制／粘贴。多光标提供逐段分发和每处完整粘贴，有多个不同文本片段时可还原各处内容 |
+| 剪贴板 | **已有**。系统剪切／复制／粘贴同时支持纯文本与保留多选区的片段。空光标按整行操作。多光标可逐段分发或在每处粘贴全部内容 | 验收外部纯文本、多段各自含换行、末行无换行、同一行有多个光标，以及粘贴后一次撤销 |
 | 撤销与重做 | **已有共享历史栈**。连续键入或同向删除可合并，粘贴和组合提交有各自的边界。撤销恢复交互选区，新编辑截断重做分支。菜单可查询 `canUndo`／`canRedo` | 移动行、块缩进、多光标替换和全部替换均按命令撤销和重做。验证两视图共享历史并各自保有选区 |
 | 整行与选区命令 | **已有**。上移／下移行块、向上／向下复制行、复制选区、删除整行、在上方／下方插入空行、合并行 | 空选区取当前行。多个选区命中同一行只处理一次。覆盖反向选区、文末无换行及移动后的光标位置 |
 | 行缩进与块缩进 | **已有基础缩进**。可设置缩进宽度、Tab 显示宽度及写入空格或 Tab，支持按制表位进退、块缩进／反缩进、Enter 继承缩进和 Tab／空格转换 | 在混合换行中选中两行且末端落到第三行行首，块缩进只作用于前两行。语言规则驱动的增减缩进见第二批 |
 | 文档内查找与替换 | **已有**。选中文字发起查找、双向循环、大小写、Unicode 全词、正则、选区内查找、匹配序号与总数、当前／全部替换以及编号和命名捕获组 | 无效表达式给出反馈，零宽匹配可继续遍历，替换全部可整笔撤销。折叠接入后，定位到隐藏匹配应展开对应范围 |
 | 定位、视口与阅读位置 | **部分**。行号、软换行、横纵滚动、可见范围、`revealRange`、光标矩形和各视图独立的滚动状态 | 补拖动滚动条、转到行／列、按行／页只滚动视口、居中显示光标行，以及切换文档时保存和恢复视图状态。跳转后键盘焦点回到正文 |
-| 命令、快捷键与菜单 | **部分**。`addAction`／`runAction` 支持动作 ID、可用条件和快捷键。内置移动、删除等主要走原生 `TextEditCommand` | 给内置动作稳定 ID，支持列举、查询可用性和覆盖默认键位。系统菜单、编辑器右键菜单、快捷键和宿主调用同一个动作。IME 组字、只读和焦点转移遵守相同判定 |
-| 原生输入与无障碍 | **已有 macOS 验证**。正文由自绘 Element 接收原生输入。辅助技术可读取全文、设置选区并发起编辑 | 增加切换 Tab 插入／移出编辑器焦点的操作。验证只读时仍能导航和复制，查找框与嵌入按钮能用键盘进入和退出。平台支持按实际验证记录 |
+| 命令、快捷键与菜单 | **已有统一入口**。内置动作有稳定 ID，可列举、查询可用性、改键或解绑。原生文字命令、编辑器右键菜单、宿主菜单与快捷键复用动作 | 新增动作沿用这一入口。验收移动／选区、只读、输入法组字、焦点切换，以及重绑后旧快捷键的行为 |
+| 原生输入与无障碍 | **已有 macOS 验证**。正文由自绘 Element 接收原生输入。辅助技术可读取全文、设置选区并发起编辑。Tab 可切换插入或焦点遍历 | 验收查找框与嵌入的 Lens 按钮能用键盘进入和退出，返回正文后仍能继续组字。Windows、Linux 按各自原生输入及辅助技术验证记录交付 |
 
 Monaco 的 `cursorColumnSelectDown` 向下扩展列选，`editor.action.insertCursorAbove` 在上一行加光标，`editor.action.selectHighlights` 选中所有匹配，`editor.action.moveLinesDownAction` 将行块下移。Scoop 可在已有选区与事务上实现这些操作，并让宿主和默认快捷键调用同一个入口。[Monaco 核心命令][core] · [多光标命令][multi] · [行操作][lines] · [查找与替换][find] · [Scoop 文字命令](../src/edit/commands.scoop) · [原生命令分发](../src/input/navigation.scoop) · [鼠标与键盘入口](../src/input/events.scoop)
+
+### 容易漏掉的命令
+
+| 操作 | 两批交付内 | 可独立追加的 Monaco 动作 |
+| --- | --- | --- |
+| 选行与选词 | 键盘逐次扩选整行，双击选词后按词拖动，三击或点行号后按整行拖动 | 单独指定上一个或下一个词的词首／词尾，删除光标所在词，按驼峰子词移动。[整行选择][expand-line] · [词操作][word] · [子词操作][word-part] |
+| 多光标 | 上／下加光标、各选中行末加光标、追加／跳过匹配、矩形扩选 | 一次向文件首尾加光标、把焦点轮换到上一／下一光标，只撤销光标移动。[多光标命令][multi] · [核心命令][core] |
+| 缩进与注释 | 行／块进退一个缩进级，沿用缩进及根据规则增减，切换行注释与块注释 | 按规则重排整个文件或选中行的缩进，自动探测缩进，独立“添加行注释”和“移除行注释”。[缩进命令][indent-actions] · [注释命令][comment-actions] |
+| 括号与折叠 | 跳转／选择至配对括号，手动设置与移除折叠区，当前、递归、全部折叠／展开 | 移除匹配的括号对、按嵌套深度给括号着色、跳到父折叠／相邻折叠、按级别或标记折叠。[括号命令][brackets] · [折叠命令][folds] · [编辑器选项][options] |
+| 滚动与导航 | 翻页移动光标，独立按行／页滚动视口，转到行列并定位，恢复阅读位置 | 水平步进滚动、只把视口移到文档顶端／底端。这些动作可共享同一滚动状态。[核心命令][core] |
 
 ## 第二批　代码编辑视图与扩展
 
@@ -42,19 +52,21 @@ Monaco 的 `cursorColumnSelectDown` 向下扩展列选，`editor.action.insertCu
 
 Monaco 为这些能力提供了不同的数据入口。语言配置描述符号和编辑规则，token provider 产生词法区间，folding provider 返回行范围，CodeLens 返回命令信息。它还在范围装饰中公开字体属性和注入文本。本组件可沿用这些职责，以 Scoop 的 `Utf8Range`、`TextLayout`、`View` 和可关闭的登记表达。[语言配置][language] · [词法接口][tokens] · [范围字体和装饰][decor] · [折叠实现][folds] · [CodeLens 接口][lens] · [Lens 行间布局][lenswidget] · [行内提示实现][inlay] · [Scoop 装饰](../src/extensions/decorations.scoop) · [Scoop 控件](../src/extensions/widgets.scoop)
 
-共享文档的两个视图可复用同一版本的 token、折叠候选范围和诊断，各自保存实际折叠状态、几何和焦点。宿主先用现有的快照、正文变更和可见范围事件交付数据。异步结果应对应请求时的文档版本，关闭登记时一并清除其展示内容。[Scoop 视图状态](../src/view/state.scoop) · [现有长行测量](PERFORMANCE.md)
+共享文档的两个视图可复用同一版本的 token、折叠候选范围和诊断，各自保存实际折叠状态、几何和焦点。宿主用快照、正文变更和可见范围事件交付数据。异步结果应对应请求时的文档版本，关闭登记时一并清除其展示内容。[Scoop 视图状态](../src/view/state.scoop) · [现有长行测量](PERFORMANCE.md)
 
 ## 值得沿用的 API 设计
 
 | 关注点 | Monaco 的公开入口 | Scoop 的落点 |
 | --- | --- | --- |
-| 文档存储 | `ITextModel.createSnapshot`、按行／范围读取、`getOffsetAt`、`getPositionAt`。Piece tree 属于内部实现 | `CodeDocument` 和不可变 `CodeSnapshot` 提供 UTF-8 字节范围读写。宿主可保存文档对象，两个视图共享同一份正文。编辑器用排版结果把字节位置映射为用户看到的字素、列和坐标。[模型接口][model] · [Monaco piece tree][piece] |
+| 文档存储 | `ITextModel.createSnapshot`、按行／范围读取、`getOffsetAt`、`getPositionAt`。Piece tree 属于内部实现 | `CodeDocument` 按 UTF-8 字节范围编辑，`CodeSnapshot` 提供固定版本的只读片段。两个视图可共享正文和历史。公开坐标保留 Scoop 的零起点字节列，接入使用 UTF-16 的宿主时在边界转换。视觉列和像素坐标来自实际排版。[模型接口][model] · [Monaco piece tree][piece] · [Scoop 坐标约定](SPEC.md#文档) |
 | 编辑命令 | `ICommand.getEditOperations` 描述修改，`computeCursorState` 计算新选区。`executeEdits` 和 `pushUndoStop` 提供执行及撤销边界 | 在旧版本上生成一批替换，一次提交，用 `CodeEditMap` 计算各选区的新位置。纯导航只改视图。键入、菜单、宿主动作遵守相同的只读和历史规则。[命令接口][command] · [编辑器执行接口][execute] |
 | 视图与事件 | `getSelections`、`saveViewState`／`restoreViewState`、`getVisibleRanges`、`getTargetAtClientPoint`，以及正文、选区、滚动和布局事件 | 视图拥有主次选区、折叠和阅读位置。可见行排版应同时服务绘制、鼠标命中、键盘列选、辅助技术和候选窗。滚动、改宽、变字体或显示 Lens 后查询同一已呈现帧。[可见区域和控件接口][geometry] |
 | 高亮和控件 | `createDecorationsCollection` 提交可追踪的范围。`addContentWidget` 锚定正文，`addOverlayWidget` 锚定视口，`changeViewZones` 改变行间布局 | 查找用范围着色，查找面板用浮层，CodeLens 用行前占位加原生按钮，inlay 用参与字形排版的虚拟文本。单纯改色只需重绘，影响字形或行高的样式还要重排。[装饰选项][decor] · [视图控件][geometry] |
 | 数据提供与生命周期 | 语言配置、tokens、folding ranges、CodeLens、inlay hints 和按来源设置的 markers 有各自的入口。状态监听及多数登记可释放 | 直接用一份 Scoop 配置、内存行范围、一条诊断和一个“运行测试”按钮即可验收。外部分析器可以随后接入相同接口。文档、快照版本和可见范围决定结果发给谁、何时采用。[语言配置][language] · [诊断接口][markers] · [Lens 接口][lens] |
 
-**输入法快照的实际边界是主选区覆盖的逻辑行。** Monaco 的浏览器 `EditContext` 从主选区首行行首取到末行行尾，普通光标因此只有一行。它的 `textarea` 路径另有策略，例如关闭读屏支持时，macOS 的空选区可只取光标前的词或字符。Scoop 正文从自绘 `Element` 接入原生输入，在本地片段与文档之间映射范围。现有同为 299,999 字节的样本中，十万短行首次聚焦送出 2 字节，单条长行送出 299,999 字节。全文选区和辅助技术读取全文分别验收。[Monaco EditContext][ime-native] · [textarea 路径][ime-textarea] · [Scoop 原生实测](PERFORMANCE.md)
+**原生输入法上下文以主选区为中心。** Monaco 的浏览器 `EditContext` 从主选区首行行首取到末行行尾，普通光标因此只有一行。它的 `textarea` 路径另有策略，例如关闭读屏支持时，macOS 的空选区可只取光标前的词或字符。Scoop 正文从自绘 `Element` 接入原生输入，在本地片段与文档之间映射范围。现有同为 299,999 字节的样本中，十万短行首次聚焦送出 2 字节，单条长行送出 299,999 字节。全文选区和辅助技术读取全文分别验收。[Monaco EditContext][ime-native] · [textarea 路径][ime-textarea] · [Scoop 原生实测](PERFORMANCE.md)
+
+**实现依赖。** 文档快照、选区和事务足以支撑整行命令、行块缩进、剪贴板、查找替换和共享撤销。折叠、范围字体、行内提示和行间 Lens 则先要统一三种位置的换算，即源码偏移、折行或折叠后的位置、窗口中的像素位置。否则一个 Lens 就能把下一行的鼠标命中和输入法候选窗一起推错。先用两个独立视图、一段大字号正文、一条折叠范围及首行上方的按钮验收这套换算，再接提供真实结果的语言服务。[视图 API][geometry] · [Scoop 排版设计](DESIGN.md#4-可见行排版与绘制)
 
 ## 其余 Monaco 能力的取舍
 
@@ -85,7 +97,7 @@ Monaco 为这些能力提供了不同的数据入口。语言配置描述符号�
 
 ## 验收样例
 
-初始基线 `3aff516` 在 macOS arm64 通过了 21 项常规测试和 1 项 AppKit 原生输入及无障碍协议测试。行操作与查找随后分别合入 `536b669` 和 `8ce7696`，已有混合换行、反向选区、捕获组和零宽匹配的专测。下面五个场景用来判断两批能力能否配合工作。[行操作用例](../tests/lines.scoop) · [查找用例](../tests/find.scoop) · [原生验证入口](../validation/appkit.sh)
+初始基线 `3aff516` 在 macOS arm64 通过了 21 项常规测试和 1 项 AppKit 原生输入及无障碍协议测试。行操作、查找、剪贴板与原生动作随后分别合入 `536b669`、`8ce7696`、`f069315`。已有混合换行、反向选区、捕获组、零宽匹配、分段粘贴和命令可用性的专测。下面五个场景用来判断两批能力能否配合工作。[行操作用例](../tests/lines.scoop) · [查找用例](../tests/find.scoop) · [剪贴板和动作用例](../tests/clipboard.scoop) · [原生验证入口](../validation/appkit.sh)
 
 1. **用多个光标改源码。** 从当前词连续选中两处，再在下一行加光标。一次键入同时修改三处。撤销恢复三组原选区，重做恢复修改。另测矩形选区跨 Tab 和汉字时的逐行粘贴。
 2. **移动和缩进一块代码。** 在含 CRLF 的文档中选两行，选区末端落到第三行行首。缩进、下移、复制行块时只操作前两行，每个动作均可单独撤销。切换到空格缩进再按 Enter 时继承正确层级。
@@ -117,3 +129,9 @@ Monaco 为这些能力提供了不同的数据入口。语言配置描述符号�
 [markers]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L1044
 [ime-native]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/controller/editContext/native/nativeEditContext.ts#L496
 [ime-textarea]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContext.ts#L209
+[expand-line]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/lineSelection/browser/lineSelection.ts
+[word]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/wordOperations/browser/wordOperations.ts
+[word-part]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/wordPartOperations/browser/wordPartOperations.ts
+[indent-actions]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/indentation/browser/indentation.ts
+[comment-actions]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/comment/browser/comment.ts
+[brackets]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/bracketMatching/browser/bracketMatching.ts
