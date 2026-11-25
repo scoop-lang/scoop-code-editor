@@ -1,0 +1,276 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.accessibility.*
+
+public fun codeEditor(state: CodeEditorState): View = element(
+    state,
+    { props, scope -> EditorInk(props, scope) }
+)
+
+internal class EditorInk(private val props: Props<CodeEditorState>, scope: ComponentScope) :
+    Element<EditorFrame>(scope) {
+    internal var editor = props.value
+    internal var input = EditorInputSession(editor)
+    internal val viewport = scope.scrollViewport(editor.scroll)
+    internal val area = scope
+        .createArea(focusable = true, textInput = !editor.readOnly) { c, e -> event(c, e) }
+    internal val focus = scope.focusTarget(area)
+    internal val semantics = scope.semantics(SemanticRole.TextField)
+    internal val layoutEngine = CodeLayout(this)
+    internal var accepted: EditorFrame? = None
+    internal var connection: TextInputConnection? = None
+    internal var retiring = false
+    internal var projectionChanged = false
+    internal var dragging = false
+    internal var preferredX: Array<Double?> = []
+    internal var caretVisible = true
+    internal var semanticVersion = -1L
+    internal var semanticValue = ""
+    internal var ended = false
+    private var change: Closeable? = None
+    private var selection: Closeable? = None
+    private var previousVisible: Array<Utf8Range> = []
+    private val blink = scope
+        .createDeadline {
+            if (!ended &&
+                area.isFocusActive &&
+                scope.nativeWindow.isVisible &&
+                !scope.nativeWindow.isOccluded
+            ) {
+                caretVisible = !caretVisible
+                scope.requestFrame()
+            }
+        }
+
+    init {
+        area.scope.defaultAction = { c, e -> event(c, e) }
+        scope.routeChildren(area)
+        semantics.bindFocus(Some(focus))
+        scope.routeSemanticsChildren(Some(semantics))
+        bind()
+    }
+
+    internal fun blinkReset() {
+        blink.cancel()
+    }
+
+    private fun bind() {
+        if (editor.closed || (editor.mounted?.ended == Some(false)))
+            throw IllegalStateException(Some("editor state is closed or already mounted"))
+        editor.mounted = Some(this)
+        change = Some(
+            editor
+                .document
+                .onChange { event ->
+                    val old = accepted
+                    when (old) {
+                        case Some(val frame) -> {
+                            val hit = frame.hit(Point(frame.gutter + 1.0, 0.0))
+                            when (hit) {
+                                case Some(val pos) -> {
+                                    val y = frame.displayCaret(frame.displayPosition(pos))?.y ?: 0.0
+                                    val anchor = layoutEngine.anchor
+                                    val previous = anchor?.offset ?: pos.byteOffset
+                                    layoutEngine.anchor = Some(
+                                        ReadingAnchor(
+                                            event.mapping.map(previous),
+                                            anchor?.screenY ?: y,
+                                            editor.scroll.requestRevision
+                                        )
+                                    )
+                                };
+
+                                case None -> {}
+                            }
+                        }
+
+                        case None -> {}
+                    }
+                    when (editor.reveal) {
+                        case Some(val r) ->
+                            editor.reveal = Some(
+                                Utf8Range(event.mapping.map(r.start), event.mapping.map(r.end))
+                            );
+                        case None -> {}
+                    }
+                    refreshInput()
+                    syncSemantics()
+                    scope.requestLayout()
+                }
+        )
+        selection = Some(
+            editor
+                .onSelectionChange { _ ->
+                    refreshInput()
+                    syncSemantics()
+                    caretVisible = true
+                    blink.cancel()
+                    scope.requestFrame()
+                }
+        )
+        syncSemantics()
+    }
+
+    internal fun settingsChanged() {
+        if (ended) return
+        area.textInput = !editor.readOnly
+        refreshInput()
+        syncSemantics()
+        scope.requestLayout()
+    }
+
+    internal fun refreshInput() {
+        if (input.applying) return
+        val composing = input.composing
+        if (input.synchronize()) {
+            area.setCaret(None, Some(input.state.revision))
+            if (composing) {
+                projectionChanged = true;
+                scope.requestLayout()
+            }
+            if (area.isFocusActive && connection != None) retiring = area.restartTextInput()
+        }
+    }
+
+    internal fun currentFrame(): EditorFrame? {
+        val frame = accepted ?: return None
+        return if (!ended && matches(frame)) Some(frame) else None
+    }
+
+    private fun matches(frame: EditorFrame): Boolean = editor.document.version ==
+        frame.document.version &&
+        editor.options ===
+        frame.options &&
+        (!input.composing || frame.inputRevision == input.state.revision) &&
+        !projectionChanged &&
+        (input.composing || frame.projected?.changes?.size == None)
+
+    internal fun clippedCaret(frame: EditorFrame, position: TextPosition): Rect? {
+        val rect = frame.displayCaret(position) ?: return None
+        if (rect.x <
+            frame.gutter -
+            1.0 ||
+            rect.x >=
+            frame.size.width ||
+            rect.y +
+            rect.height <=
+            0.0 ||
+            rect.y >=
+            frame.size.height
+        )
+            return None
+        val y = if (rect.y < 0.0) 0.0 else rect.y
+        val bottom = if (rect.y + rect.height > frame.size.height)
+            frame.size.height
+        else
+            rect.y + rect.height
+        return Some(Rect(rect.x, y, rect.width, bottom - y))
+    }
+
+    internal fun activePosition(frame: EditorFrame): TextPosition = if (input.composing)
+        TextPosition(input.start + input.state.selection.cursor)
+    else
+        frame.displayPosition(editor.selections.primary.cursor)
+
+    public override fun update(): UiInvalidation {
+        if (editor !== props.value) {
+            unbind()
+            editor = props.value
+            viewport.state = editor.scroll
+            area.scope.enabled = true
+            area.textInput = !editor.readOnly
+            input = EditorInputSession(editor)
+            layoutEngine.anchor = None
+            semanticVersion = -1L
+            ended = false
+            bind()
+        }
+        return UiInvalidation.Layout
+    }
+
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        EditorFrame
+    > {
+        val frame = layoutEngine.measure(constraints)
+        return LayoutResult(LayoutMetrics(frame.size), frame, { frame.release() })
+    }
+
+    public override fun scene(context: SceneContext, frame: EditorFrame) {
+        val bounds = Rect(0.0, 0.0, frame.size.width, frame.size.height)
+        val caret = if (matches(frame)) clippedCaret(frame, activePosition(frame)) else None
+        area.setCaret(caret, Some(input.state.revision))
+        context.place(area, bounds)
+        context.semantics(semantics, bounds)
+        viewport.present(context, frame.scroll)
+        drawEditor(context, frame, this)
+        val retained = frame.retain()
+        val owner = editor
+        val pending = editor.reveal
+        context
+            .onFrameComplete { completion ->
+                if (!ended &&
+                    scope.isMounted &&
+                    editor ===
+                    owner &&
+                    completion.submission ==
+                    FrameSubmission.Accepted &&
+                    matches(retained)
+                ) {
+                    accepted?.release()
+                    accepted = Some(retained)
+                    if (editor.reveal == pending) editor.reveal = None
+                    layoutEngine.anchor = None
+                    val ranges = retained.visible()
+                    if (ranges.size !=
+                        previousVisible.size ||
+                        (ranges.size > 0L && ranges[0L] != previousVisible[0L])
+                    ) {
+                        previousVisible = ranges
+                        editor.viewportEvents.emit(ranges)
+                    }
+                    if (area.isFocusActive &&
+                        !input.composing &&
+                        !blink.isScheduled &&
+                        scope.nativeWindow.isVisible &&
+                        !scope.nativeWindow.isOccluded
+                    ) {
+                        blink.schedule(MonotonicTimeSource.now() + Duration.milliseconds(500L))
+                    }
+                } else
+                    retained.release()
+            }
+    }
+
+    internal fun stateClosed() {
+        unbind();
+        area.scope.enabled = false;
+        area.textInput = false
+    }
+    private fun unbind() {
+        ended = true
+        dragging = false
+        blink.cancel()
+        if (scope.isMounted && connection != None && !area.isClosed) area.restartTextInput()
+        connection = None
+        retiring = false
+        editor.mounted = None
+        change?.close()
+        selection?.close()
+        change = None
+        selection = None
+        accepted?.release()
+        accepted = None
+        layoutEngine.close()
+        previousVisible = []
+    }
+    public override fun onUnmount() {
+        unbind()
+    }
+}

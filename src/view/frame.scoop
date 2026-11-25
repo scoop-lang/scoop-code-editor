@@ -1,0 +1,137 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.ui.*
+import scoop.window.Utf8Range
+
+internal class ShapedLine(
+    val source: String,
+    val projection: LineProjection,
+    val layout: TextLayout,
+    val style: TextStyle,
+    val width: Double,
+    val tabSize: Long,
+    val fontsRevision: Long
+) {
+    private var owners = 1L
+    internal fun retain(): ShapedLine {
+        owners += 1L;
+        return this
+    }
+    internal fun release() {
+        owners -= 1L;
+        if (owners == 0L) layout.close()
+    }
+}
+
+internal class ScreenRow(
+    val line: Long,
+    val range: Utf8Range,
+    val ink: ShapedLine,
+    val label: ShapedLine?,
+    val top: Double,
+    val height: Double
+) {
+    internal fun display(position: TextPosition): TextPosition = TextPosition(
+        ink.projection.displayOffset(position.byteOffset - range.start),
+        position.affinity
+    )
+    internal fun source(position: TextPosition): TextPosition = TextPosition(
+        range.start + ink.projection.sourceOffset(position.byteOffset),
+        position.affinity
+    )
+}
+
+internal class EditorFrame(
+    val document: CodeSnapshot,
+    val inputRevision: Long,
+    val options: CodeEditorOptions,
+    val scroll: ScrollLayout,
+    val size: Size,
+    val gutter: Double,
+    val rows: Array<ScreenRow>,
+    val projected: CodeEditMap?,
+    val unprojected: CodeEditMap?
+) {
+    private var owners = 1L
+    internal val origin: Point get() = scroll.presentationOffset
+    internal fun retain(): EditorFrame {
+        owners += 1L;
+        return this
+    }
+    internal fun release() {
+        owners -= 1L
+        if (owners == 0L)
+            for (row in rows) {
+                row.ink.release();
+                row.label?.release()
+            }
+    }
+    internal fun displayPosition(pos: TextPosition): TextPosition = TextPosition(
+        projected?.map(pos.byteOffset) ?: pos.byteOffset,
+        pos.affinity
+    )
+    internal fun original(pos: TextPosition): TextPosition = TextPosition(
+        unprojected?.map(pos.byteOffset) ?: pos.byteOffset,
+        pos.affinity
+    )
+
+    internal fun rowAt(position: TextPosition): ScreenRow? {
+        val line = document.positionAt(position.byteOffset).line
+        for (row in rows) {
+            if (row.line == line) return Some(row)
+        }
+        return None
+    }
+
+    internal fun displayCaret(position: TextPosition): Rect? {
+        val row = rowAt(position) ?: return None
+        val offset = if (position.byteOffset > row.range.end)
+            TextPosition(row.range.end)
+        else
+            position
+        val rect = row.ink.layout.caret(row.display(offset)) ?: return None
+        return Some(
+            Rect(gutter + rect.x - origin.x, row.top + rect.y - origin.y, rect.width, rect.height)
+        )
+    }
+
+    internal fun hit(point: Point): TextPosition? {
+        if (rows.size == 0L) return None
+        val y = point.y + origin.y
+        var row = rows[rows.size - 1L]
+        for (candidate in rows) {
+            if (y < candidate.top + candidate.height) {
+                row = candidate;
+                break
+            }
+        }
+        val pos = row.ink.layout.hitTest(Point(point.x - gutter + origin.x, y - row.top))
+        return Some(original(row.source(pos)))
+    }
+
+    internal fun visible(): Array<Utf8Range> {
+        if (rows.size == 0L || size.height <= 0.0) return []
+        var first = -1L
+        var end = 0L
+        for (row in rows) {
+            if (row.top + row.height <= origin.y || row.top >= origin.y + size.height) continue
+            for (visual in row.ink.layout.lines) {
+                val top = row.top + visual.rect.y
+                if (top + visual.rect.height <= origin.y || top >= origin.y + size.height) continue
+                val a = row.range.start + row.ink.projection.sourceOffset(visual.range.start)
+                val b = row.range.start + row.ink.projection.sourceOffset(visual.range.end)
+                if (first < 0L) first = a
+                end = b
+            }
+        }
+        if (first < 0L) return []
+        return [
+            Utf8Range(
+                original(TextPosition(first)).byteOffset,
+                original(TextPosition(end)).byteOffset
+            )
+        ]
+    }
+}

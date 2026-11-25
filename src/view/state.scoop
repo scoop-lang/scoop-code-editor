@@ -1,12 +1,65 @@
 package scoop.ui.editor
 
+import scoop.graphics.Rect
+import scoop.graphics.text.TextPosition
+import scoop.ui.ScrollState
+import scoop.window.Utf8Range
+
 public class CodeEditorState public constructor(public val document: CodeDocument) : Closeable {
     internal val identity = EditorIdentity()
     internal val selectionEvents = EditorSignal<CodeSelections>()
     internal var closed = false
     private var current = CodeSelections([CodeSelection.caret(0L)])
     public val selections: CodeSelections get() = current
-    public var readOnly: Boolean = false
+    internal var mounted: EditorInk? = None
+    internal var reveal: Utf8Range? = None
+    internal val viewportEvents = EditorSignal<Array<Utf8Range>>()
+    public val scroll = ScrollState()
+    private var settings = CodeEditorOptions()
+    private var locked = false
+    public var options: CodeEditorOptions
+        get() = settings
+        set(value) {
+            settings = value;
+            mounted?.settingsChanged()
+        }
+    public var readOnly: Boolean
+        get() = locked
+        set(value) {
+            if (value != locked) {
+                locked = value;
+                mounted?.settingsChanged()
+            }
+        }
+
+    public fun onViewportChange(listener: (Array<Utf8Range>) -> Unit): Closeable = viewportEvents
+        .listen(listener)
+    public fun visibleRanges(): Array<Utf8Range> {
+        val ink = mounted ?: return [];
+        return ink.currentFrame()?.visible() ?: []
+    }
+    public fun caretRect(position: TextPosition): Rect? {
+        val ink = mounted ?: return None
+        val frame = ink.currentFrame() ?: return None
+        if (!scalarBoundary(document.root, position.byteOffset)) return None
+        val local = ink.clippedCaret(frame, frame.displayPosition(position)) ?: return None
+        return ink.area.toWindow(local)
+    }
+    public fun revealRange(range: Utf8Range) {
+        if (!validRange(document.root, range))
+            throw IllegalArgumentException(Some("invalid reveal range"))
+        reveal = Some(range)
+        when (mounted) {
+            case Some(val ink) -> {
+                scroll.beginLayoutRequest();
+                ink.scope.requestLayout()
+            };
+
+            case None -> {}
+        }
+    }
+    public fun requestFocus(): Boolean = mounted?.area?.requestFocus() ?: false
+    public val hasFocus: Boolean get() = mounted?.area?.isFocusActive ?: false
 
     init {
         document.attach(this)
@@ -48,6 +101,8 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         closed = true
         breakUndoGroup()
         document.detach(this)
+        mounted?.stateClosed()
         selectionEvents.clear()
+        viewportEvents.clear()
     }
 }

@@ -1,0 +1,73 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.TextAffinity
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.accessibility.*
+
+internal fun EditorInk.syncSemantics() {
+    val doc = editor.document
+    if (semanticVersion != doc.version) {
+        semanticValue = doc.read(Utf8Range(0L, doc.byteLength))
+        semanticVersion = doc.version
+    }
+    val s = editor.selections.primary
+    val properties = SemanticProperties(
+        name = Some("Code editor"), value = Some(semanticValue), readOnly = editor.readOnly,
+        selection = Some(Utf8Selection(s.anchor.byteOffset, s.cursor.byteOffset)),
+        cursorAffinity = if (s.cursor.affinity == TextAffinity.Upstream)
+            SemanticTextAffinity.Upstream
+        else
+            SemanticTextAffinity.Downstream
+    )
+    semantics
+        .update(
+            properties,
+            SemanticActions(
+                setSelection = Some(
+                    { next ->
+                        if (!validRange(doc.root, next.range))
+                            SemanticActionResult.InvalidArgument
+                        else {
+                            editor.setSelections([CodeSelection.offsets(next.anchor, next.cursor)])
+                            editor.revealRange(next.range)
+                            SemanticActionResult.Completed
+                        }
+                    }
+                ),
+                setValue = if (editor.readOnly)
+                    None
+                else
+                    Some({ text -> semanticReplace(Utf8Range(0L, doc.byteLength), text) }),
+                replaceText = if (editor.readOnly)
+                    None
+                else
+                    Some({ r, text -> semanticReplace(r, text) }),
+                revealText = Some(
+                    { r, _ ->
+                        if (!validRange(doc.root, r))
+                            SemanticActionResult.InvalidArgument
+                        else {
+                            editor.revealRange(r);
+                            SemanticActionResult.Completed
+                        }
+                    }
+                )
+            )
+        )
+}
+
+private fun EditorInk.semanticReplace(r: Utf8Range, text: String): SemanticActionResult =
+    when (editor
+        .executeEdits(
+            editor.document.version,
+            [CodeEdit(r, text)],
+            Some({ map -> CodeSelections([CodeSelection.caret(map.insertedRange(0L).end)]) })
+        )
+    ) {
+        case Applied -> SemanticActionResult.Completed
+        case Unchanged -> SemanticActionResult.Completed
+        case Invalid -> SemanticActionResult.InvalidArgument
+        case Busy -> SemanticActionResult.Busy
+        else -> SemanticActionResult.Rejected
+    }

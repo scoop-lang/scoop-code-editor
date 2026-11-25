@@ -1,0 +1,158 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.TextPosition
+import scoop.platform.time.MonotonicTimeSource
+import scoop.surface.*
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.*
+
+@Test
+private class NativeEditorWindowTests {
+    @Test(useProcess = true)
+    fun splitEditorsPaintHitTestScrollAndShareEdits() {
+        val p = NativeWindowProbe()
+        UiHost(
+            onRootError = { _, error -> throw error },
+            handler = { host, app, event -> p.event(host, app, event) }
+        )
+            .use { host -> Application().run(host) }
+        assertTrue(p.finished)
+    }
+}
+
+private class NativeWindowProbe {
+    private val original = "中\t🙂 abc אבג 123\r\n" + "short row\n".repeat(250L)
+    val doc = CodeDocument(original)
+    val left = CodeEditorState(doc)
+    val right = CodeEditorState(doc)
+    var finished = false
+    private var stage = 0
+    private var queued = false
+
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                left.onViewportChange { _ -> app.proxy().post { _ -> Unit } }
+                right.onViewportChange { _ -> app.proxy().post { _ -> Unit } }
+                val window = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Scoop code editor validation";
+                            size = LogicalSize(640.0, 260.0);
+                            visible = false
+                        }
+                    )
+                host.attach(window, { mount -> ProbeEditors(this, mount) })
+                window.setVisible(true)
+                window.requestFocus()
+                app
+                    .setControlFlow(
+                        ControlFlow.WaitUntil(MonotonicTimeSource.now() + Duration.seconds(12L))
+                    )
+            }
+
+            case AboutToWait ->
+                if (!queued && !finished) {
+                    val l = left.mounted ?: return
+                    val r = right.mounted ?: return
+                    val lf = l.currentFrame() ?: return
+                    val rf = r.currentFrame() ?: return
+                    if (lf.document.version != doc.version || rf.document.version != doc.version)
+                        return
+                    if (stage ==
+                        2 &&
+                        right.caretRect(TextPosition(doc.lineRange(180L).start)) ==
+                        None
+                    )
+                        return
+                    queued = true
+                    app
+                        .proxy()
+                        .post { active ->
+                            queued = false;
+                            advance(active)
+                        }
+                }
+
+            case NewEvents(StartCause.Deadline) -> {
+                if (!finished) {
+                    val l = left.mounted
+                    val r = right.mounted
+                    val leftFrame = l?.accepted ?: None
+                    val rightFrame = r?.accepted ?: None
+                    val leftRows = leftFrame?.rows?.size ?: -1L
+                    val rightRows = rightFrame?.rows?.size ?: -1L
+                    val mounted = l?.ended == Some(false)
+                    fail(
+                        Some(
+                            f"editor window stopped at stage ${stage}, mounted ${
+                                mounted
+                            }, accepted rows ${leftRows}/${rightRows}"
+                        )
+                    )
+                };
+                app.requestExit()
+            }
+
+            else -> {}
+        }
+    }
+
+    private fun advance(app: ActiveApplication) {
+        val ink = left.mounted!!
+        val frame = ink.currentFrame()!!
+        when (stage) {
+            case 0 -> {
+                assertTrue(frame.rows.size > 0L && frame.rows.size < 40L)
+                assertEquals(0L, left.visibleRanges()[0L].start)
+                val caret = frame.displayCaret(TextPosition(4L))!!
+                val hit = frame.hit(Point(caret.x, caret.y + caret.height / 2.0))!!
+                assertEquals(4L, hit.byteOffset)
+                assertTrue(left.caretRect(TextPosition(4L)) != None)
+                assertTrue(left.requestFocus())
+                left.setSelections([CodeSelection.caret(3L)])
+                left.replaceSelections("😀")
+                assertTrue(right.mounted!!.currentFrame()?.document?.version == None)
+                stage = 1
+            }
+
+            case 1 -> {
+                assertEquals("中😀\t🙂 abc אבג 123", doc.read(doc.lineRange(0L)))
+                assertEquals(original.byteLength + 4L, right.mounted!!.semanticValue.byteLength)
+                assertEquals(CodeEditResult.Applied, right.undo())
+                assertEquals(original, doc.read(Utf8Range(0L, doc.byteLength)))
+                right.options = CodeEditorOptions(softWrap = true)
+                right.revealRange(doc.lineRange(180L))
+                stage = 2
+            }
+
+            case 2 -> {
+                assertTrue(right.scroll.offset.y > 0.0)
+                assertEquals(0.0, left.scroll.offset.y)
+                assertTrue(right.visibleRanges()[0L].start > 0L)
+                assertTrue(right.caretRect(TextPosition(0L)) == None)
+                finished = true
+                app.requestExit()
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class ProbeEditors(private val probe: NativeWindowProbe, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View {
+        val p = probe;
+        return row {
+            alignment = CrossAlignment.Stretch
+            item(codeEditor(p.left)) { grow = 1.0 }
+            item(codeEditor(p.right)) { grow = 1.0 }
+        }
+    }
+}

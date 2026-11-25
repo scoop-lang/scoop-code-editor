@@ -1,0 +1,240 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.Utf8Range
+
+internal class ReadingAnchor(val offset: Long, val screenY: Double, val request: ULong)
+
+internal fun positive(value: Double): Double = if (value > 1.0) value else 1.0
+
+internal class CodeLayout(val ink: EditorInk) {
+    private var index = ItemExtentIndex(0L, ItemExtent.Variable(20.0))
+    private var width = -2.0
+    private var options: CodeEditorOptions? = None
+    private var version = -1L
+    private var revision = -1L
+    private var fontRevision = -1L
+    private var maximumWidth = 0.0
+    internal var anchor: ReadingAnchor? = None
+    private var cache = ArrayList<ShapedLine>()
+    private var gutterStyle: TextStyle = textStyle()
+
+    internal fun lineAtPage(line: Long, dy: Double): Long {
+        val y = index.prefix(line) + dy
+        val next = index.indexAt(if (y < 0.0) 0.0 else y)
+        return if (next < index.count) next else index.count - 1L
+    }
+    internal fun close() {
+        for (entry in cache)
+            entry.release();
+        cache.clear()
+    }
+
+    private fun shape(
+        source: String,
+        style: TextStyle,
+        wrap: Double,
+        tab: Long,
+        used: ArrayList<ShapedLine>
+    ): ShapedLine {
+        val fonts = ink.scope.defaultFonts
+        for (line in cache) {
+            if (line.source ==
+                source &&
+                style ===
+                line.style &&
+                wrap ==
+                line.width &&
+                tab ==
+                line.tabSize &&
+                fonts.revision ==
+                line.fontsRevision
+            ) {
+                used.add(line.retain())
+                return line.retain()
+            }
+        }
+        val projection = LineProjection.from(source, tab)
+        val layout = Paragraph(fonts, projection.text, style)
+            .use { paragraph ->
+                if (wrap < 0.0) paragraph.layoutUnwrapped() else paragraph.layout(wrap)
+            }
+        val line = ShapedLine(source, projection, layout, style, wrap, tab, fonts.revision)
+        used.add(line.retain())
+        return line
+    }
+
+    internal fun measure(constraints: Constraints): EditorFrame {
+        val state = ink.editor
+        val opt = state.options
+        val doc = ink.input.preview ?: CodeSnapshot(state.document.root, state.document.version)
+        val size = constraints
+            .constrain(Size(constraints.maxWidth ?: 640.0, constraints.maxHeight ?: 360.0))
+        val gutter = if (opt.lineNumbers)
+            16.0 + doc.lineCount.toString().byteLength.toDouble() * opt.text.fontSize * 0.75
+        else
+            4.0
+        val wrap = if (opt.softWrap) positive(size.width - gutter - 4.0) else -1.0
+        val estimate = positive(opt.text.fontSize * 1.45)
+        val styleChanged = when (options) {
+            case Some(val previous) -> previous !== opt;
+            case None -> true
+        }
+        val fonts = ink.scope.defaultFonts
+        if (styleChanged) gutterStyle = opt.text.copy { color = opt.gutter }
+        if (doc.lineCount !=
+            index.count ||
+            doc.version !=
+            version ||
+            (ink.input.composing && revision != ink.input.state.revision) ||
+            wrap !=
+            width ||
+            styleChanged ||
+            fonts.revision !=
+            fontRevision ||
+            ink.projectionChanged
+        ) {
+            index = ItemExtentIndex(doc.lineCount, ItemExtent.Variable(estimate))
+            maximumWidth = 0.0
+            val old = ink.accepted
+            if (!styleChanged &&
+                wrap ==
+                width &&
+                fonts.revision ==
+                fontRevision &&
+                old?.document?.version ==
+                Some(doc.version)
+            ) {
+                for (row in old!!.rows) {
+                    if (row.line <
+                        doc.lineCount &&
+                        doc.read(doc.lineRange(row.line)) ==
+                        row.ink.source
+                    )
+                        index.record(row.line, row.height)
+                }
+            }
+        }
+        version = doc.version
+        revision = ink.input.state.revision
+        options = Some(opt)
+        fontRevision = fonts.revision
+        width = wrap
+        ink.projectionChanged = false
+        var x = state.scroll.offset.x
+        var y = state.scroll.offset.y
+        val pinned = anchor
+        var adjustment: ScrollAdjustment? = None
+        val pending = state.reveal
+        val scroll = state.scroll
+        val target = when (pending) {
+            case Some(val range) ->
+                Some(doc.positionAt(ink.input.previewMap?.map(range.end) ?: range.end).line)
+            case None -> None
+        }
+        when (pinned) {
+            case Some(val a) ->
+                if (a.request == scroll.requestRevision && pending == None) {
+                    val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
+                    y = index.prefix(doc.positionAt(offset).line) - a.screenY
+                    adjustment = Some(
+                        ScrollAdjustment(a.request, Point(x, if (y > 0.0) y else 0.0))
+                    )
+                }
+            case None -> {}
+        }
+        val used = ArrayList<ShapedLine>()
+        val rows = ArrayList<ScreenRow>()
+        try {
+            when (target) {
+                case Some(val line) -> {
+                    val r = doc.lineRange(line)
+                    val body = shape(doc.read(r), opt.text, wrap, opt.tabSize, used)
+                    try {
+                        val h = positive(body.layout.size.height)
+                        index.record(line, h)
+                        val measured = body.layout.size.width + gutter + 4.0
+                        if (measured > maximumWidth) maximumWidth = measured
+                        val offset = ink.input.previewMap?.map(pending!!.end) ?: pending!!.end
+                        val local = if (offset > r.end) r.end - r.start else offset - r.start
+                        val caret = body
+                            .layout
+                            .caret(TextPosition(body.projection.displayOffset(local)))
+                        val top = index.prefix(line) + (caret?.y ?: 0.0)
+                        val bottom = top + (caret?.height ?: h)
+                        if (top < y)
+                            y = top
+                        else if (bottom > y + size.height) y = bottom - size.height
+                        val edge = caret?.x ?: 0.0
+                        if (edge < x)
+                            x = edge
+                        else if (edge > x + size.width - gutter - 4.0)
+                            x = edge - size.width + gutter + 4.0
+                        adjustment = Some(
+                            ScrollAdjustment(
+                                scroll.requestRevision,
+                                Point(if (x > 0.0) x else 0.0, if (y > 0.0) y else 0.0)
+                            )
+                        )
+                    } finally {
+                        body.release()
+                    }
+                }
+
+                case None -> {}
+            }
+            var offered = ink.viewport.layout(size, Size(maximumWidth, index.total), adjustment)
+            y = offered.presentationOffset.y
+            var line = index.indexAt(if (y > 0.0) y else 0.0)
+            if (line > 0L) line -= 1L
+            while (
+                line <
+                    doc.lineCount &&
+                    (rows.size == 0L || index.prefix(line) <= y + size.height + estimate)
+            ) {
+                val r = doc.lineRange(line)
+                val body = shape(doc.read(r), opt.text, wrap, opt.tabSize, used)
+                val label = if (opt.lineNumbers)
+                    Some(shape((line + 1L).toString(), gutterStyle, -1.0, 1L, used))
+                else
+                    None
+                val h = positive(body.layout.size.height)
+                index.record(line, h)
+                rows.add(ScreenRow(line, r, body, label, index.prefix(line), h))
+                val measured = body.layout.size.width + gutter + 4.0
+                if (measured > maximumWidth) maximumWidth = measured
+                line += 1L
+            }
+            offered = ink
+                .viewport
+                .layout(
+                    size,
+                    Size(if (opt.softWrap) size.width else maximumWidth, index.total),
+                    adjustment
+                )
+            return EditorFrame(
+                doc,
+                revision,
+                opt,
+                offered,
+                size,
+                gutter,
+                rows.toArray(),
+                ink.input.previewMap,
+                ink.input.reverseMap
+            )
+        } catch (error: Throwable) {
+            for (row in rows) {
+                row.ink.release();
+                row.label?.release()
+            }
+            throw error
+        } finally {
+            close()
+            cache = used
+        }
+    }
+}

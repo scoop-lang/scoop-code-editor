@@ -1,0 +1,240 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.window.*
+
+private fun EditorInk.withLine(
+    line: Long,
+    frame: EditorFrame,
+    run: (ScreenRow) -> TextPosition
+): TextPosition {
+    for (row in frame.rows) {
+        if (row.line == line) return run(row)
+    }
+    val r = editor.document.lineRange(line)
+    val text = editor.document.read(r)
+    val p = LineProjection.from(text, editor.options.tabSize)
+    val style = editor.options.text
+    val fonts = scope.defaultFonts
+    return Paragraph(fonts, p.text, style)
+        .use { para ->
+            val width = if (editor.options.softWrap)
+                positive(frame.size.width - frame.gutter - 4.0)
+            else
+                -1.0
+            val layout = if (width < 0.0) para.layoutUnwrapped() else para.layout(width)
+            layout
+                .use { value ->
+                    val ink = ShapedLine(
+                        text,
+                        p,
+                        value,
+                        style,
+                        width,
+                        editor.options.tabSize,
+                        fonts.revision
+                    )
+                    run(ScreenRow(line, r, ink, None, 0.0, value.size.height))
+                }
+        }
+}
+
+private fun EditorInk.destination(
+    cursor: TextPosition,
+    move: TextMovement,
+    preferred: Double?,
+    frame: EditorFrame
+): TextPosition {
+    val doc = editor.document
+    val logical = doc.positionAt(cursor.byteOffset)
+    val forward = move ==
+        TextMovement.Forward ||
+        move ==
+        TextMovement.Right ||
+        move ==
+        TextMovement.WordForward ||
+        move ==
+        TextMovement.WordRight
+    when (move) {
+        case DocumentStart -> return TextPosition(0L)
+        case DocumentEnd -> return TextPosition(doc.byteLength)
+        case Backward -> return TextPosition(adjacentGrapheme(doc, cursor.byteOffset, false))
+        case Forward -> return TextPosition(adjacentGrapheme(doc, cursor.byteOffset, true))
+        case ParagraphStart -> return TextPosition(doc.lineRange(logical.line).start)
+        case ParagraphEnd -> return TextPosition(doc.lineRange(logical.line).end)
+        else -> {}
+    }
+    return withLine(logical.line, frame) { row ->
+        val at = if (cursor.byteOffset > row.range.end)
+            TextPosition(row.range.end, cursor.affinity)
+        else
+            cursor
+        val pos = row.display(at)
+        val layout = row.ink.layout
+        val action = when (move) {
+            case Left -> CaretMovement.Left;
+            case Right -> CaretMovement.Right
+            case WordLeft -> CaretMovement.WordLeft;
+            case WordRight -> CaretMovement.WordRight
+            case LineStart -> CaretMovement.LineStart;
+            case LineEnd -> CaretMovement.LineEnd
+            case LineLeft -> CaretMovement.LineLeft;
+            case LineRight -> CaretMovement.LineRight
+            case Up -> CaretMovement.Up;
+            case Down -> CaretMovement.Down
+            else -> CaretMovement.DocumentStart
+        }
+        if (move == TextMovement.WordBackward || move == TextMovement.WordForward) {
+            val b = layout.moveWord(pos.byteOffset, forward)
+            if (b != pos.byteOffset) return@withLine row.source(TextPosition(b))
+        } else if (move == TextMovement.PageUp || move == TextMovement.PageDown) {
+            val dy = if (move == TextMovement.PageUp) -frame.size.height else frame.size.height
+            val targetY = layoutEngine.lineAtPage(logical.line, dy)
+            return@withLine withLine(targetY, frame) { next ->
+                next.source(next.ink.layout.hitTest(Point(preferred ?: 0.0, 0.0)))
+            }
+        } else {
+            val next = layout.moveCaret(pos, action, preferred)
+            if (next != None && next!!.position != pos) return@withLine row.source(next!!.position)
+            if (move ==
+                TextMovement.LineStart ||
+                move ==
+                TextMovement.LineEnd ||
+                move ==
+                TextMovement.LineLeft ||
+                move ==
+                TextMovement.LineRight
+            )
+                return@withLine cursor
+        }
+        if (move == TextMovement.Up || move == TextMovement.Down) {
+            val target = logical.line + if (move == TextMovement.Up) -1L else 1L
+            if (target < 0L || target >= doc.lineCount) return@withLine cursor
+            return@withLine withLine(target, frame) { next ->
+                val y = if (move == TextMovement.Up) next.height - 1.0 else 0.0
+                next.source(next.ink.layout.hitTest(Point(preferred ?: 0.0, y)))
+            }
+        }
+        TextPosition(adjacentGrapheme(doc, cursor.byteOffset, forward))
+    }
+}
+
+private fun EditorInk.move(motion: TextMovement, extend: Boolean) {
+    val frame = currentFrame() ?: return
+    val old = editor.selections
+    val values = ArrayList<CodeSelection>()
+    val columns = ArrayList<Double?>()
+    val vertical = motion ==
+        TextMovement.Up ||
+        motion ==
+        TextMovement.Down ||
+        motion ==
+        TextMovement.PageUp ||
+        motion ==
+        TextMovement.PageDown
+    for (i in 0L..<old.values.size) {
+        val s = old.values[i]
+        val column = if (!vertical)
+            None
+        else if (preferredX.size == old.values.size && preferredX[i] != None)
+            preferredX[i]
+        else
+            Some((frame.displayCaret(s.cursor)?.x ?: frame.gutter) - frame.gutter + frame.origin.x)
+        val target = if (!extend &&
+            s.range.start <
+            s.range.end &&
+            (motion == TextMovement.Left || motion == TextMovement.Right)
+        )
+            TextPosition(if (motion == TextMovement.Left) s.range.start else s.range.end)
+        else
+            destination(s.cursor, motion, column, frame)
+        values.add(CodeSelection(if (extend) s.anchor else target, target))
+        columns.add(column)
+    }
+    editor.setSelections(values, old.primaryIndex)
+    preferredX = columns.toArray()
+}
+
+internal fun EditorInk.command(cmd: TextEditCommand): Boolean {
+    if (!area.isFocusActive || ended) return false
+    if (input.composing && cmd != TextEditCommand.Cancel) return false
+    when (cmd) {
+        case Move(val motion, val extend) -> move(motion, extend)
+        case SelectAll -> editor.selectAll()
+
+        case Copy -> {
+            val text = editor.selectedText();
+            if (text.byteLength > 0L) scope.nativeWindow.clipboard.writeText(text);
+            return true
+        }
+
+        case Cancel -> {
+            if (!input.composing) return false;
+            input.synchronize(true);
+            retiring = area.restartTextInput();
+            projectionChanged = true;
+            scope.requestLayout()
+        }
+
+        else -> {
+            if (editor.readOnly) return false
+            when (cmd) {
+                case Delete(TextDeletion.Forward) -> editor.deleteGrapheme(true)
+                case Delete(TextDeletion.Backward) -> editor.deleteGrapheme(false)
+
+                case Delete(val d) -> {
+                    val motion = when (d) {
+                        case WordBackward -> TextMovement.WordBackward;
+                        case WordForward -> TextMovement.WordForward
+                        case LineStart -> TextMovement.LineStart;
+                        case LineEnd -> TextMovement.LineEnd;
+                        case ParagraphStart -> TextMovement.ParagraphStart
+                        else -> TextMovement.ParagraphEnd
+                    }
+                    val frame = currentFrame() ?: return false
+                    val old = editor.selections
+                    val values = Array<CodeSelection>(old.values.size) { i ->
+                        val s = old.values[i]
+                        if (s.range.start < s.range.end)
+                            s
+                        else
+                            CodeSelection(s.anchor, destination(s.cursor, motion, None, frame))
+                    }
+                    editor.setSelections(values, old.primaryIndex)
+                    editor.replaceSelections("", CodeEditKind.Command)
+                }
+
+                case Undo -> editor.undo()
+                case Redo -> editor.redo()
+                case DeleteSelection -> editor.replaceSelections("", CodeEditKind.Command)
+
+                case Cut -> {
+                    val text = editor.selectedText();
+                    if (text.byteLength > 0L) {
+                        scope.nativeWindow.clipboard.writeText(text);
+                        editor.replaceSelections("", CodeEditKind.Command)
+                    }
+                }
+
+                case Paste -> {
+                    val text = scope.nativeWindow.clipboard.readText() ?: return false;
+                    editor.replaceSelections(text, CodeEditKind.Paste)
+                }
+
+                case InsertNewline -> editor.insertNewline()
+                case InsertTab ->
+                    if (editor.selections.primary.range.start == editor.selections.primary.range.end
+                    )
+                        editor.replaceSelections("\t", CodeEditKind.Command)
+                    else
+                        editor.indent()
+                case InsertBacktab -> editor.indent(true, editor.options.tabSize)
+                else -> return false
+            }
+            preferredX = []
+        }
+    }
+    editor.revealRange(editor.selections.primary.range)
+    return true
+}

@@ -1,0 +1,149 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.ui.*
+import scoop.window.Utf8Range
+
+private fun paintRange(
+    canvas: Canvas,
+    frame: EditorFrame,
+    row: ScreenRow,
+    range: Utf8Range,
+    color: Color,
+    underline: Boolean
+) {
+    val start = if (range.start > row.range.start) range.start else row.range.start
+    val end = if (range.end < row.range.end) range.end else row.range.end
+    val dx = frame.gutter - frame.origin.x
+    val dy = row.top - frame.origin.y
+    val paint = Paint(color = color)
+    if (start < end) {
+        val a = row.ink.projection.displayOffset(start - row.range.start)
+        val b = row.ink.projection.displayOffset(end - row.range.start)
+        for (box in row.ink.layout.selection(TextRange(a, b))) {
+            val r = box.rect
+            canvas
+                .drawRect(
+                    if (underline)
+                        Rect(dx + r.x, dy + r.y + r.height - 1.0, r.width, 1.0)
+                    else
+                        Rect(dx + r.x, dy + r.y, r.width, r.height),
+                    paint
+                )
+        }
+    }
+    if (!underline && range.start <= row.range.end && range.end > row.range.end) {
+        val edge = row.ink.layout.caret(TextPosition(row.ink.projection.text.byteLength))
+        when (edge) {
+            case Some(val r) ->
+                canvas
+                    .drawRect(
+                        Rect(dx + r.x, dy + r.y, frame.options.text.fontSize * 0.55, r.height),
+                        paint
+                    );
+            case None -> {}
+        }
+    }
+}
+
+internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorInk) {
+    val opt = frame.options
+    val size = frame.size
+    context
+        .draw { paint ->
+            val canvas = paint.canvas
+            canvas.drawRect(Rect(0.0, 0.0, size.width, size.height), Paint(color = opt.background))
+            for (row in frame.rows) {
+                when (row.label) {
+                    case Some(val label) ->
+                        canvas
+                            .drawText(
+                                label.layout,
+                                Point(
+                                    frame.gutter - label.layout.size.width - 6.0,
+                                    row.top - frame.origin.y
+                                )
+                            );
+                    case None -> {}
+                }
+            }
+        }
+    context
+        .withState { body ->
+            body
+                .clipRect(
+                    Rect(
+                        frame.gutter,
+                        0.0,
+                        if (size.width > frame.gutter) size.width - frame.gutter else 0.0,
+                        size.height
+                    )
+                )
+            body
+                .draw { paint ->
+                    val canvas = paint.canvas
+                    val primary = ink.editor.selections.primaryIndex
+                    val selections = ink.editor.selections.values
+                    for (row in frame.rows) {
+                        for (i in 0L..<selections.size) {
+                            val range = selections[i].range
+                            if (ink.input.composing && i == primary) {
+                                val selection = ink.input.state.selection.range
+                                paintRange(
+                                    canvas,
+                                    frame,
+                                    row,
+                                    Utf8Range(
+                                        ink.input.start + selection.start,
+                                        ink.input.start + selection.end
+                                    ),
+                                    opt.selection,
+                                    false
+                                )
+                            } else {
+                                val a = frame.projected?.map(range.start) ?: range.start
+                                val b = frame.projected?.map(range.end) ?: range.end
+                                paintRange(
+                                    canvas,
+                                    frame,
+                                    row,
+                                    Utf8Range(a, b),
+                                    opt.selection,
+                                    false
+                                )
+                            }
+                        }
+                        canvas
+                            .drawText(
+                                row.ink.layout,
+                                Point(frame.gutter - frame.origin.x, row.top - frame.origin.y)
+                            )
+                        when (ink.input.state.markedRange) {
+                            case Some(val r) ->
+                                paintRange(
+                                    canvas,
+                                    frame,
+                                    row,
+                                    Utf8Range(ink.input.start + r.start, ink.input.start + r.end),
+                                    opt.caret,
+                                    true
+                                );
+                            case None -> {}
+                        }
+                    }
+                    if (ink.area.isFocusActive && (ink.caretVisible || ink.input.composing)) {
+                        for (i in 0L..<selections.size) {
+                            val pos = if (i == primary)
+                                ink.activePosition(frame)
+                            else
+                                frame.displayPosition(selections[i].cursor)
+                            when (frame.displayCaret(pos)) {
+                                case Some(val r) -> canvas.drawRect(r, Paint(color = opt.caret));
+                                case None -> {}
+                            }
+                        }
+                    }
+                }
+        }
+}
