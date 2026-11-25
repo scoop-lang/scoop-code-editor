@@ -16,8 +16,17 @@ internal class ShapedLine(
     val runs: Array<EditorStyleRun> = [],
     val suffix: String = "",
     val inlays: Array<LineInlay> = [],
-    val hintColor: Color? = None
+    val hintColor: Color? = None,
+    val controls: Boolean = false
 ) {
+    private var blanks: LineWhitespace? = None
+    internal fun whitespace(): LineWhitespace {
+        val current = blanks
+        if (current?.indent != None) return current!!
+        val result = LineWhitespace(source, tabSize)
+        blanks = Some(result)
+        return result
+    }
     private var owners = 1L
     internal fun display(
         source: Long,
@@ -46,7 +55,8 @@ internal class ShapedLine(
         colors: Array<EditorStyleRun>,
         ending: String,
         hints: Array<LineInlay>,
-        color: Color?
+        color: Color?,
+        showControls: Boolean
     ): Boolean = source ==
         text &&
         style ===
@@ -62,7 +72,9 @@ internal class ShapedLine(
         sameRuns(runs, colors) &&
         sameInlays(inlays, hints) &&
         hintColor ==
-        color
+        color &&
+        controls ==
+        showControls
 
     internal fun retain(): ShapedLine {
         owners += 1L;
@@ -109,7 +121,8 @@ internal class EditorFrame(
     val widgets: Array<EditorWidget>,
     val scrollRevision: ULong,
     val folds: FoldProjection,
-    val foldRevision: Long
+    val foldRevision: Long,
+    val cellWidth: Double = 0.0
 ) {
     private var owners = 1L
     internal val placedWidgets = ArrayList<PositionedWidget>()

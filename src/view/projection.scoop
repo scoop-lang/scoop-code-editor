@@ -29,47 +29,53 @@ internal fun graphemeOffsets(text: String): Array<Long> {
     return result.toArray()
 }
 
-private struct TabRun(val source: Long, val display: Long, val spaces: Long)
+private struct ProjectionRun(
+    val source: Long,
+    val sourceLength: Long,
+    val display: Long,
+    val displayLength: Long
+)
 
 internal class LineProjection private constructor(
     internal val text: String,
-    private val tabs: Array<TabRun>,
+    private val substitutions: Array<ProjectionRun>,
     internal val sourceEnd: Long,
     private val bytes: Long,
     internal val hints: Array<DisplayInlay> = []
 ) {
-    internal val hasTabs: Boolean get() = tabs.size > 0L
-    private fun tabOffset(source: Long): Long {
+    internal val hasSubstitutions: Boolean get() = substitutions.size > 0L
+    private fun expandedOffset(source: Long): Long {
         var low = 0L
-        var high = tabs.size
+        var high = substitutions.size
         while (low < high) {
             val mid = (low + high) / 2L
-            if (tabs[mid].source < source) low = mid + 1L else high = mid
+            if (substitutions[mid].source < source) low = mid + 1L else high = mid
         }
         if (low == 0L) return source
-        val run = tabs[low - 1L]
-        return source + run.display + run.spaces - run.source - 1L
+        val run = substitutions[low - 1L]
+        return source + run.display + run.displayLength - run.source - run.sourceLength
     }
 
-    private fun tabSource(display: Long): Long {
+    private fun expandedSource(display: Long): Long {
         var low = 0L
-        var high = tabs.size
+        var high = substitutions.size
         while (low < high) {
             val mid = (low + high) / 2L
-            if (tabs[mid].display < display) low = mid + 1L else high = mid
+            if (substitutions[mid].display < display) low = mid + 1L else high = mid
         }
         if (low == 0L) return display
-        val run = tabs[low - 1L]
+        val run = substitutions[low - 1L]
         val distance = display - run.display
-        if (distance < run.spaces) return run.source + if (distance * 2L < run.spaces) 0L else 1L
-        return run.source + 1L + distance - run.spaces
+        if (distance < run.displayLength)
+            return run.source + if (distance * 2L < run.displayLength) 0L else run.sourceLength
+        return run.source + run.sourceLength + distance - run.displayLength
     }
 
     internal fun displayOffset(
         source: Long,
         affinity: TextAffinity = TextAffinity.Downstream
     ): Long {
-        val base = tabOffset(source)
+        val base = expandedOffset(source)
         var low = 0L
         var high = hints.size
         while (low < high) {
@@ -96,12 +102,12 @@ internal class LineProjection private constructor(
     internal fun sourceOffset(display: Long): Long {
         if (display >= sourceEnd) return bytes
         val i = hintIndex(display)
-        if (i < 0L) return tabSource(display)
+        if (i < 0L) return expandedSource(display)
         val last = hints[i]
         return if (display <= last.end)
             last.hint.offset
         else
-            tabSource(display - last.end + last.base)
+            expandedSource(display - last.end + last.base)
     }
     internal fun hasInlay(offset: Long): Boolean = hints.size >
         0L &&
@@ -153,16 +159,17 @@ internal class LineProjection private constructor(
             text: String,
             tabSize: Long,
             suffix: String = "",
-            inlays: Array<LineInlay> = []
+            inlays: Array<LineInlay> = [],
+            controls: Boolean = false
         ): LineProjection {
-            val base = expandTabs(text, tabSize, suffix)
+            val base = expandCharacters(text, tabSize, suffix, controls)
             if (inlays.size == 0L) return base
             val shown = StringBuilder()
             val runs = ArrayList<DisplayInlay>()
             var at = 0L
             var extra = 0L
             for (hint in inlays) {
-                val mark = base.tabOffset(hint.offset)
+                val mark = base.expandedOffset(hint.offset)
                 if (mark > at) shown.append(base.text.utf8Slice(Utf8Range(at, mark)))
                 shown.append(hint.text.label)
                 val start = mark + extra
@@ -174,15 +181,27 @@ internal class LineProjection private constructor(
                 shown.append(base.text.utf8Slice(Utf8Range(at, base.text.byteLength)))
             return LineProjection(
                 shown.toString(),
-                base.tabs,
+                base.substitutions,
                 base.sourceEnd + extra,
                 text.byteLength,
                 runs.toArray()
             )
         }
-        private fun expandTabs(text: String, tabSize: Long, suffix: String): LineProjection {
+        private fun expandCharacters(
+            text: String,
+            tabSize: Long,
+            suffix: String,
+            controls: Boolean
+        ): LineProjection {
             if (tabSize <= 0L) throw IllegalArgumentException(Some("tab size must be positive"))
-            if (text.indexOf("\t") < 0L)
+            var changed = text.indexOf("\t") >= 0L
+            if (controls && !changed)
+                for (ch in text)
+                    if (controlLabel(ch) != None) {
+                        changed = true;
+                        break
+                    }
+            if (!changed)
                 return LineProjection(
                     if (suffix.byteLength == 0L) text else text + suffix,
                     [],
@@ -190,7 +209,7 @@ internal class LineProjection private constructor(
                 )
             val boundaries = graphemeBoundaries(text)
             val output = StringBuilder()
-            val tabs = ArrayList<TabRun>()
+            val substitutions = ArrayList<ProjectionRun>()
             var scalar = 0L
             var cluster = 0L
             var column = 0L
@@ -205,21 +224,45 @@ internal class LineProjection private constructor(
                 }
                 if (ch == '\t') {
                     width = tabSize - column % tabSize
-                    tabs.add(TabRun(source, display, width))
+                    substitutions.add(ProjectionRun(source, 1L, display, width))
                     for (i in 0L..<width)
                         output.append(" ")
                     display += width
                 } else {
-                    val cells = unicodeScalarWidth(ch).toLong()
-                    if (cells > width) width = cells
-                    output.append(ch)
-                    display += scalarBytes(ch)
+                    val visual = if (controls) controlLabel(ch) else None
+                    when (visual) {
+                        case Some(val label) -> {
+                            substitutions
+                                .add(
+                                    ProjectionRun(
+                                        source,
+                                        scalarBytes(ch),
+                                        display,
+                                        label.byteLength
+                                    )
+                                )
+                            output.append(label)
+                            display += label.byteLength
+                        }
+
+                        case None -> {
+                            val cells = unicodeScalarWidth(ch).toLong()
+                            if (cells > width) width = cells
+                            output.append(ch)
+                            display += scalarBytes(ch)
+                        }
+                    }
                 }
                 source += scalarBytes(ch)
                 scalar += 1L
             }
             output.append(suffix)
-            return LineProjection(output.toString(), tabs.toArray(), display, text.byteLength)
+            return LineProjection(
+                output.toString(),
+                substitutions.toArray(),
+                display,
+                text.byteLength
+            )
         }
     }
 }

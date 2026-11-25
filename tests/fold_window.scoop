@@ -31,13 +31,33 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
     val doc = CodeDocument("outer\n  nested\n    body\n  peer\nafter\nend")
     val left = CodeEditorState(doc)
     val right = CodeEditorState(doc)
+    private var glyphClicks = 0
     private val lens = left.codeLenses()
     init {
+        left.options = CodeEditorOptions(
+            whitespace = CodeWhitespace.All,
+            indentGuides = true,
+            rulers = [4L, 12L],
+            showControlCharacters = true
+        )
+        val glyph = CodeGutterGlyph(
+            "Toggle breakpoint",
+            CodeGlyphShape.Diamond,
+            Color.Black,
+            Some { view, line ->
+                assertTrue(view === left)
+                assertEquals(0L, line)
+                glyphClicks += 1
+            }
+        )
+        left
+            .decorations()
+            .set([CodeDecoration(doc.lineRange(0L), CodeDecorationStyle(glyph = Some(glyph)))])
         val action = CodeLensContent.Ready(CodeLensAction("Body") { _ -> })
         lens.set(doc.version, [CodeLens(doc.lineRange(2L), action)])
     }
     private var window: Window? = None
-    private var stage = 0
+    private var stage = -1
     private var queued = false
     private val deadline = MonotonicTimeSource.now() + Duration.seconds(15L)
     var finished = false
@@ -88,7 +108,29 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
                     .post { active ->
                         queued = false
                         when (stage) {
+                            case - 1 -> {
+                                val row = frame.rows[0L]
+                                val y = row.top -
+                                    frame.origin.y +
+                                    row.ink.layout.lines[0L].rect.height /
+                                    2.0
+                                val x = left.options.glyphStart() + 7.0
+                                val win = leftInk.area.toWindow(Rect(x, y, 1.0, 1.0))!!
+                                when (val target = left.hitTest(Point(win.x, win.y))!!) {
+                                    case GutterGlyph(val line, val mark) -> {
+                                        assertEquals(0L, line);
+                                        assertEquals("Toggle breakpoint", mark.label)
+                                    }
+
+                                    else -> fail(Some("gutter glyph was not hittable"))
+                                }
+                                assertTrue(frame.cellWidth > 1.0)
+                                assertEquals(4L, frame.rows[2L].ink.whitespace().indent)
+                                click(x, y)
+                            }
+
                             case 0 -> {
+                                if (glyphClicks != 1) return@post
                                 val head = frame.rowAt(TextPosition(0L))!!
                                 assertTrue(head.foldHeader)
                                 assertEquals(1L, frame.placedWidgets.size)

@@ -1,0 +1,34 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.*
+import scoop.test.*
+import scoop.window.*
+
+@Test
+private class ReadabilityTests {
+    @Test
+    fun visibleControlsReserveTextWidthAndRestoreSourceOffsetsAcrossTabsAndInlays() {
+        val input = "a" + 1.toChar().toString() + "\t" + 0x202e.toChar().toString() + "Z"
+        val hint = LineInlay(6L, CodeInlaySide.Before, CodeInlayText("hint"))
+        val shown = LineProjection.from(input, 4L, "", [hint], true)
+        assertEquals("a␁  ⟦RLO⟧hintZ", shown.text)
+        for (boundary in [0L, 1L, 2L, 3L, 6L, 7L])
+            assertEquals(boundary, shown.sourceOffset(shown.displayOffset(boundary)))
+        assertEquals(3L, shown.sourceOffset(shown.displayOffset(3L) + 1L))
+        val raw = CodeEditorState(CodeDocument(input))
+        raw.selectAll()
+        assertEquals(input, raw.copyContent().text)
+        val plain = LineProjection.from(input, 4L)
+        assertEquals(1.toChar().toString(), plain.text.utf8Slice(Utf8Range(1L, 2L)))
+    }
+    @Test
+    fun leadingIndentAndTrailingSpacesUseSourceColumnsAndByteOffsets() {
+        val line = LineWhitespace(" \t 中 \t", 4L)
+        assertEquals(5L, line.indent)
+        assertEquals(6L, line.trailing)
+        assertEquals(5L, line.marks.size)
+        assertEquals(1L, line.marks[1L].indent)
+        assertTrue(line.marks[1L].tab)
+        assertEquals(-1L, line.marks[3L].indent)
+    }
+}

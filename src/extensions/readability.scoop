@@ -1,0 +1,201 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.text.toString
+
+public enum CodeWhitespace {
+    None, All, Trailing, Selection
+}
+
+public enum CodeGlyphShape {
+    Circle, Diamond, Arrow
+}
+
+public class CodeGutterGlyph public constructor(
+    public val label: String,
+    public val shape: CodeGlyphShape,
+    public val color: Color,
+    public val onClick: ((CodeEditorState, Long) -> Unit)? = None
+)
+
+internal fun CodeEditorOptions.glyphStart(): Double = if (foldingControls) 14.0 else 0.0
+
+internal fun lineGlyph(row: ScreenRow, items: Array<CodeDecoration>): CodeGutterGlyph? {
+    var shown: CodeGutterGlyph? = None
+    for (d in items)
+        if (d.range.start >=
+            row.range.start &&
+            d.range.start <=
+            row.range.end &&
+            d.style.glyph?.label !=
+            None
+        )
+            shown = d.style.glyph
+    return shown
+}
+
+internal class HitGlyph(val line: Long, val glyph: CodeGutterGlyph)
+
+internal fun EditorInk.glyphAt(frame: EditorFrame, point: Point): HitGlyph? {
+    val x = frame.options.glyphStart()
+    if (!frame.options.glyphMargin || point.x < x || point.x >= x + 14.0) return None
+    val world = point.y + frame.origin.y
+    for (row in frame.rows) {
+        if (world < row.top || world >= row.top + row.ink.layout.lines[0L].rect.height) continue
+        val glyph = lineGlyph(row, decorationsFor(row.range)) ?: return None
+        val original = frame.original(TextPosition(row.range.start))
+        return Some(HitGlyph(editor.document.positionAt(original.byteOffset).line, glyph))
+    }
+    return None
+}
+
+internal fun paintGlyph(
+    canvas: Canvas,
+    frame: EditorFrame,
+    row: ScreenRow,
+    glyph: CodeGutterGlyph
+) {
+    val x = frame.options.glyphStart() + 7.0
+    val y = row.top - frame.origin.y + row.ink.layout.lines[0L].rect.height * 0.5
+    val p = Paint(color = glyph.color)
+    when (glyph.shape) {
+        case Circle -> canvas.drawCircle(Point(x, y), 4.0, p)
+
+        case Diamond -> {
+            canvas.drawLine(Point(x, y - 4.5), Point(x + 4.5, y), p)
+            canvas.drawLine(Point(x + 4.5, y), Point(x, y + 4.5), p)
+            canvas.drawLine(Point(x, y + 4.5), Point(x - 4.5, y), p)
+            canvas.drawLine(Point(x - 4.5, y), Point(x, y - 4.5), p)
+        }
+
+        case Arrow -> {
+            canvas.drawLine(Point(x - 4.5, y), Point(x + 4.5, y), p)
+            canvas.drawLine(Point(x + 1.0, y - 3.5), Point(x + 4.5, y), p)
+            canvas.drawLine(Point(x + 1.0, y + 3.5), Point(x + 4.5, y), p)
+        }
+    }
+}
+
+internal struct SourceSpace(val offset: Long, val tab: Boolean, val indent: Long)
+
+internal class LineWhitespace(source: String, tabSize: Long) {
+    internal val marks = ArrayList<SourceSpace>()
+    internal var trailing = 0L
+    internal var indent = 0L
+    init {
+        var leading = true
+        var offset = 0L
+        for (ch in source) {
+            val count = scalarBytes(ch)
+            if (ch == ' ' || ch == '\t') {
+                marks.add(SourceSpace(offset, ch == '\t', if (leading) indent else -1L))
+                if (leading) indent += if (ch == '\t') tabSize - indent % tabSize else 1L
+            } else {
+                leading = false
+                trailing = offset + count
+            }
+            offset += count
+        }
+    }
+}
+
+private fun selectedAt(selections: CodeSelections, at: Long): Boolean {
+    for (selection in selections.values)
+        if (selection.range.start <= at && at < selection.range.end) return true
+    return false
+}
+
+internal fun paintWhitespace(canvas: Canvas, frame: EditorFrame, row: ScreenRow, ink: EditorInk) {
+    val opt = frame.options
+    if (!opt.indentGuides && opt.whitespace == CodeWhitespace.None) return
+    val blanks = row.ink.whitespace()
+    val dx = frame.gutter - frame.origin.x
+    val dy = row.top - frame.origin.y
+    val marker = Paint(color = opt.theme.whitespace)
+    val guide = Paint(color = opt.theme.guide)
+    for (mark in blanks.marks) {
+        val at = mark.offset
+        val width = if (mark.tab && mark.indent >= 0L)
+            opt.tabSize - mark.indent % opt.tabSize
+        else
+            1L
+        val nextGuide = if (mark.indent >= 0L)
+            (mark.indent / opt.indentSize + 1L) * opt.indentSize
+        else
+            0L
+        val guideHere = opt.indentGuides &&
+            mark.indent >=
+            0L &&
+            nextGuide <=
+            mark.indent +
+            width &&
+            nextGuide <=
+            blanks.indent
+        val visible = when (opt.whitespace) {
+            case None -> false
+            case All -> true
+            case Trailing -> at >= blanks.trailing
+            case Selection ->
+                selectedAt(
+                    ink.editor.selections,
+                    frame.original(TextPosition(row.range.start + at)).byteOffset
+                )
+        }
+        if (!visible && !guideHere) continue
+        val first = row.ink.projection.displayOffset(at)
+        val last = row.ink.projection.displayOffset(at + 1L, TextAffinity.Upstream)
+        for (box in row.ink.layout.selection(TextRange(first, last))) {
+            val rect = box.rect
+            val x = dx + rect.x
+            val y = dy + rect.y + rect.height / 2.0
+            if (x > frame.size.width || x + rect.width < frame.gutter) continue
+            if (guideHere) {
+                var column = nextGuide
+                while (column <= mark.indent + width && column <= blanks.indent) {
+                    val edge = x + rect.width * (column - mark.indent).toDouble() / width.toDouble()
+                    canvas.drawLine(Point(edge, dy), Point(edge, dy + row.height), guide)
+                    column += opt.indentSize
+                }
+            }
+            if (!visible || y < 0.0 || y > frame.size.height) continue
+            if (mark.tab && rect.width > 3.0) {
+                val end = x + rect.width - 1.0
+                canvas.drawLine(Point(x + 1.0, y), Point(end, y), marker)
+                canvas.drawLine(Point(end - 2.0, y - 2.0), Point(end, y), marker)
+                canvas.drawLine(Point(end - 2.0, y + 2.0), Point(end, y), marker)
+            } else
+                canvas.drawCircle(Point(x + rect.width / 2.0, y), 1.0, marker)
+        }
+    }
+}
+
+internal fun paintRulers(canvas: Canvas, frame: EditorFrame) {
+    val p = Paint(color = frame.options.theme.guide)
+    for (column in frame.options.rulers) {
+        val x = frame.gutter + column.toDouble() * frame.cellWidth - frame.origin.x
+        if (x >= frame.gutter && x < frame.size.width)
+            canvas.drawLine(Point(x, 0.0), Point(x, frame.size.height), p)
+    }
+}
+
+internal fun controlLabel(ch: Char): String? {
+    val n = ch.code
+    if (n < 32 && n != 9) return Some((0x2400 + n).toChar().toString())
+    if (n == 127) return Some("␡")
+    return when (n) {
+        case 0x061c -> Some("⟦ALM⟧")
+        case 0x200e -> Some("⟦LRM⟧")
+        case 0x200f -> Some("⟦RLM⟧")
+        case 0x202a -> Some("⟦LRE⟧")
+        case 0x202b -> Some("⟦RLE⟧")
+        case 0x202c -> Some("⟦PDF⟧")
+        case 0x202d -> Some("⟦LRO⟧")
+        case 0x202e -> Some("⟦RLO⟧")
+        case 0x2066 -> Some("⟦LRI⟧")
+        case 0x2067 -> Some("⟦RLI⟧")
+        case 0x2068 -> Some("⟦FSI⟧")
+        case 0x2069 -> Some("⟦PDI⟧")
+        else -> if (n >= 128 && n <= 159) Some("⟦U+" + n.toString(16) + "⟧") else None
+    }
+}

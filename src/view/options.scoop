@@ -25,9 +25,16 @@ public class CodeEditorOptions public constructor(
     public val highlightCurrentLine: Boolean = true,
     public val highlightSelectionMatches: Boolean = true,
     public val highlightBrackets: Boolean = true,
+    public val indentGuides: Boolean = false,
+    public val whitespace: CodeWhitespace = CodeWhitespace.None,
+    public val showControlCharacters: Boolean = false,
+    public val rulers: Array<Long> = [],
+    public val glyphMargin: Boolean = true,
     public val foldingControls: Boolean = true
 ) {
     init {
+        for (column in rulers)
+            if (column <= 0L) throw IllegalArgumentException(Some("ruler column must be positive"))
         if (tabSize <= 0L || indentSize <= 0L)
             throw IllegalArgumentException(Some("tab and indent sizes must be positive"))
     }

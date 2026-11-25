@@ -110,7 +110,7 @@ private fun EditorInk.moveInLayout(
                 )
             }
             if ((move == TextMovement.Left || move == TextMovement.Right) &&
-                (row.ink.projection.hints.size > 0L || row.ink.projection.hasTabs)
+                (row.ink.projection.hints.size > 0L || row.ink.projection.hasSubstitutions)
             ) {
                 var step = next
                 var last = pos

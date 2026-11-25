@@ -16,7 +16,9 @@ public class CodeEditorTheme public constructor(
     public val currentLine: Color = gutter.withAlpha(0.10),
     public val matchBackground: Color = selection.withAlpha(0.43),
     public val bracketBackground: Color = gutter.withAlpha(0.20),
-    public val bracketEdge: Color = caret
+    public val bracketEdge: Color = caret,
+    public val whitespace: Color = gutter,
+    public val guide: Color = gutter.withAlpha(0.48)
 ) {
     private val styles = HashMap<String, SpanStyle>()
     init {

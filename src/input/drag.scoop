@@ -54,6 +54,18 @@ private fun EditorInk.pointerUnit(
 
 internal fun EditorInk.beginDrag(point: Point, count: Long, mods: Modifiers) {
     val frame = currentFrame() ?: return
+    when (val mark = glyphAt(frame, point)) {
+        case Some(val m) ->
+            when (val click = m.glyph.onClick) {
+                case Some(val f) -> {
+                    f(editor, m.line);
+                    return
+                };
+
+                case None -> {}
+            }
+        case None -> {}
+    }
     when (val mark = frame.inlayAt(point)) {
         case Some(val hint) ->
             when (val click = hint.text.onClick) {

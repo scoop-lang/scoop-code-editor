@@ -12,6 +12,7 @@ public struct CodeDecorationStyle(
     val underline: Color? = None,
     val gutter: Color? = None,
     val wholeLine: Color? = None,
+    val glyph: CodeGutterGlyph? = None,
     val font: SpanStyle? = None,
     val before: CodeInlayText? = None,
     val after: CodeInlayText? = None

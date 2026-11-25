@@ -58,7 +58,13 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
             val canvas = paint.canvas
             canvas.drawRect(Rect(0.0, 0.0, size.width, size.height), Paint(color = opt.background))
             for (row in frame.rows) {
-                for (d in ink.decorationsFor(row.range)) {
+                val lineStyles = ink.decorationsFor(row.range)
+                if (opt.glyphMargin)
+                    when (val glyph = lineGlyph(row, lineStyles)) {
+                        case Some(val g) -> paintGlyph(canvas, frame, row, g)
+                        case None -> {}
+                    }
+                for (d in lineStyles) {
                     when (d.style.gutter) {
                         case Some(val color) ->
                             canvas
@@ -169,6 +175,7 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                                 )
                             }
                         }
+                        paintWhitespace(canvas, frame, row, ink)
                         canvas
                             .drawText(
                                 row.ink.layout,
@@ -216,6 +223,7 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                             case None -> {}
                         }
                     }
+                    paintRulers(canvas, frame)
                     if (ink.area.isFocusActive && (ink.caretVisible || ink.input.composing)) {
                         for (i in 0L..<selections.size) {
                             val pos = if (i == primary)

@@ -55,22 +55,45 @@ internal class CodeLayout(val ink: EditorInk) {
         hints: Array<LineInlay> = []
     ): ShapedLine {
         val fonts = ink.scope.defaultFonts
+        val controls = ink.editor.options.showControlCharacters
         val hintColor = if (hints.size > 0L) Some(ink.editor.options.gutter) else None
         for (line in used) {
             if (line
-                .matches(source, style, wrap, tab, fonts.revision, runs, suffix, hints, hintColor)
+                .matches(
+                    source,
+                    style,
+                    wrap,
+                    tab,
+                    fonts.revision,
+                    runs,
+                    suffix,
+                    hints,
+                    hintColor,
+                    controls
+                )
             )
                 return line.retain()
         }
         for (line in cache) {
             if (line
-                .matches(source, style, wrap, tab, fonts.revision, runs, suffix, hints, hintColor)
+                .matches(
+                    source,
+                    style,
+                    wrap,
+                    tab,
+                    fonts.revision,
+                    runs,
+                    suffix,
+                    hints,
+                    hintColor,
+                    controls
+                )
             ) {
                 used.add(line.retain())
                 return line.retain()
             }
         }
-        val projection = LineProjection.from(source, tab, suffix, hints)
+        val projection = LineProjection.from(source, tab, suffix, hints, controls)
         val paragraph = if (runs.size == 0L && hints.size == 0L)
             Paragraph(fonts, projection.text, style)
         else
@@ -88,7 +111,7 @@ internal class CodeLayout(val ink: EditorInk) {
             tab,
             fonts.revision,
             runs,
-            suffix, hints, hintColor
+            suffix, hints, hintColor, controls
         )
         used.add(line.retain())
         return line
@@ -147,7 +170,8 @@ internal class CodeLayout(val ink: EditorInk) {
             else
                 4.0
         ) +
-            (if (opt.foldingControls) 14.0 else 0.0)
+            (if (opt.foldingControls) 14.0 else 0.0) +
+            (if (opt.glyphMargin) 14.0 else 0.0)
         val wrap = if (opt.softWrap) positive(size.width - gutter - 4.0) else -1.0
         val widgets = WidgetLayout(ink, context, size, gutter, doc, folds)
         val estimate = positive(opt.text.fontSize * 1.45)
@@ -383,6 +407,17 @@ internal class CodeLayout(val ink: EditorInk) {
                     Size(if (opt.softWrap) size.width else maximumWidth, index.total),
                     adjustment
                 )
+            var spaceWidth = 0.0
+            if (opt.rulers.size > 0L) {
+                val space = shape(" ", opt.text, -1.0, opt.tabSize, used)
+                try {
+                    spaceWidth = positive(
+                        space.layout.caret(TextPosition(1L))?.x ?: space.layout.size.width
+                    )
+                } finally {
+                    space.release()
+                }
+            }
             val frame = EditorFrame(
                 doc,
                 revision,
@@ -393,7 +428,7 @@ internal class CodeLayout(val ink: EditorInk) {
                 rows.toArray(),
                 ink.input.previewMap,
                 ink.input.reverseMap, ink.decorationRevision, ink.contents.widgets, scroll
-                    .requestRevision, folds, state.folding.revision
+                    .requestRevision, folds, state.folding.revision, spaceWidth
             )
             widgets.place(frame, index)
             return frame

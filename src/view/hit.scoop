@@ -8,7 +8,8 @@ public enum CodeHitTarget {
     Text(val position: TextPosition), Gutter(val line: Long), FoldControl(val line: Long),
     ContentWidget(val offset: Long, val view: View), OverlayWidget(val view: View),
     LineWidget(val line: Long, val side: CodeZoneSide, val view: View),
-    Inlay(val offset: Long, val side: CodeInlaySide, val text: CodeInlayText)
+    Inlay(val offset: Long, val side: CodeInlaySide, val text: CodeInlayText),
+    GutterGlyph(val line: Long, val glyph: CodeGutterGlyph)
 }
 
 internal class PositionedWidget(val widget: EditorWidget, val bounds: Rect)
@@ -43,6 +44,10 @@ public fun CodeEditorState.hitTest(windowPoint: Point): CodeHitTarget? {
                     CodeHitTarget.LineWidget(document.positionAt(w.offset).line, side, w.view)
             }
         )
+    }
+    when (val mark = ink.glyphAt(frame, point)) {
+        case Some(val m) -> return Some(CodeHitTarget.GutterGlyph(m.line, m.glyph))
+        case None -> {}
     }
     when (val hint = frame.inlayAt(point)) {
         case Some(val h) -> return Some(CodeHitTarget.Inlay(h.offset, h.side, h.text))
