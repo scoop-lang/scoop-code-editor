@@ -1,0 +1,110 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.*
+
+private fun CodeDocument.source(): String = read(Utf8Range(0L, byteLength))
+
+@Test
+private class CodeLanguageTests {
+    @Test
+    fun hostWordBoundariesAndSharedRuleChangesReachExistingEditors() {
+        val pair = CodePair("<", ">")
+        val rules = CodeLanguage(wordPattern = "[a-z]+(?:-[a-z]+)*", autoClosingPairs = [pair])
+        val doc = CodeDocument("foo-bar foo-bar\n", Some(rules))
+        val e = CodeEditorState(doc)
+        e.setSelections([CodeSelection.caret(4L)])
+        assertTrue(e.runAction("selection.addNextMatch"))
+        assertEquals("foo-bar", e.selectedText())
+        assertTrue(e.runAction("selection.addNextMatch"))
+        assertEquals("foo-bar\nfoo-bar", e.selectedText())
+        assertEquals(7L, doc.languageWordEdge(4L, true, rules.wordPattern))
+        assertEquals(0L, doc.languageWordEdge(4L, false, rules.wordPattern))
+        e.setSelections([CodeSelection.caret(doc.byteLength)])
+        e.typeText("<")
+        val peer = CodeEditorState(doc)
+        peer.setSelections([CodeSelection.caret(0L)])
+        peer.replaceSelections("x")
+        assertEquals(CodeEditResult.Unchanged, e.typeText(">"))
+        assertEquals(doc.byteLength, e.selections.primary.cursor.byteOffset)
+        e.typeText("<")
+        doc.language = None
+        e.typeText(">")
+        assertEquals("<><>>", doc.read(doc.lineRange(1L)))
+        assertFalse(e.canRunAction("comment.line"))
+        peer.close()
+        e.close()
+    }
+
+    @Test
+    fun generatedClosersFollowEditsAndSurroundingPreservesDirection() {
+        val doc = CodeDocument("a\nb", Some(scoopCodeLanguage()))
+        val e = CodeEditorState(doc)
+        e.setSelections([CodeSelection.caret(1L), CodeSelection.caret(3L)], 1L)
+        e.typeText("(")
+        assertEquals("a()\nb()", doc.source())
+        e.typeText("中")
+        e.typeText(")")
+        assertEquals("a(中)\nb(中)", doc.source())
+        val raw = CodeEditorState(CodeDocument(")", Some(scoopCodeLanguage())))
+        raw.typeText(")")
+        assertEquals("))", raw.document.source())
+        val one = CodeEditorState(CodeDocument("", Some(scoopCodeLanguage())))
+        one.typeText("{")
+        one.deleteGrapheme(false)
+        assertEquals("", one.document.source())
+        one.undo()
+        assertEquals("{}", one.document.source())
+        e.setSelections([CodeSelection.offsets(5L, 2L)])
+        e.typeText("[")
+        assertEquals("a([中])\nb(中)", doc.source())
+        assertEquals("中", e.selectedText())
+        assertFalse(e.selections.primary.forward)
+    }
+
+    @Test
+    fun newlineAndCommentsRespectLocalEolAndSelectedLines() {
+        val doc = CodeDocument("  {}\r\n  a\r\n  b", Some(scoopCodeLanguage()))
+        val e = CodeEditorState(doc)
+        e.options = CodeEditorOptions(insertSpaces = true, indentSize = 2L)
+        e.setSelections([CodeSelection.caret(3L)])
+        e.insertNewline()
+        assertEquals("  {\r\n    \r\n  }\r\n  a\r\n  b", doc.source())
+        assertEquals(9L, e.selections.primary.cursor.byteOffset)
+        e.undo()
+        val start = doc.lineRange(1L).start
+        val end = doc.lineRange(2L).end
+        e.setSelections([CodeSelection.offsets(end, start)])
+        assertTrue(e.runAction("comment.line"))
+        assertEquals("  {}\r\n  // a\r\n  // b", doc.source())
+        e.runAction("comment.line")
+        assertEquals("  {}\r\n  a\r\n  b", doc.source())
+        e.setSelections([CodeSelection.offsets(end, start)])
+        e.runAction("comment.block")
+        assertEquals("  {}\r\n/*  a\r\n  b*/", doc.source())
+        assertFalse(e.selections.primary.forward)
+        e.runAction("comment.block")
+        assertEquals("  {}\r\n  a\r\n  b", doc.source())
+        e.readOnly = true
+        assertFalse(e.runAction("comment.block"))
+    }
+
+    @Test
+    fun nativeTypingAcknowledgesLocalTextBeforePublishingPairAndImeCommitsLiterally() {
+        val doc = CodeDocument("", Some(scoopCodeLanguage()))
+        val e = CodeEditorState(doc)
+        val native = EditorInputSession(e)
+        val open = TextInputOperation.Commit("(", TextReplacement.CurrentSelection)
+        val reply = native.accept(TextInputBatch(Some(native.state.revision), [open]))!!
+        assertEquals("(", reply.acknowledgement.surroundingText)
+        assertEquals("()", reply.context!!.surroundingText)
+        assertEquals(1L, native.state.selection.cursor)
+        val begin = TextInputOperation.Preedit("拼", None, TextReplacement.CurrentSelection)
+        native.accept(TextInputBatch(Some(native.state.revision), [begin]))
+        val finish = TextInputOperation.Commit("{", TextReplacement.CurrentSelection)
+        native.accept(TextInputBatch(Some(native.state.revision), [finish]))
+        assertEquals("({)", doc.source())
+        e.undo()
+        assertEquals("()", doc.source())
+    }
+}

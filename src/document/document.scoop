@@ -67,7 +67,16 @@ public class CodeSnapshot internal constructor(
     }
 }
 
-public class CodeDocument public constructor(text: String = "") {
+public class CodeDocument public constructor(text: String = "", language: CodeLanguage? = None) {
+    public var language: CodeLanguage? = language
+        set(value) {
+            field = value
+            for (view in views) {
+                view.generatedPairs.clear()
+                view.menuRevision.value += 1L
+                view.mounted?.decorationChanged()
+            }
+        }
     internal val decorationStore = DecorationStore(this) {
         for (view in views)
             view.mounted?.decorationChanged()

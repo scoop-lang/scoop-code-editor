@@ -3,8 +3,8 @@ package scoop.ui.editor
 import scoop.regex.Regex
 import scoop.window.*
 
-internal fun CodeDocument.wordRangeAt(offset: Long, pattern: String): Utf8Range {
-    val r = lineRange(positionAt(offset).line)
+private fun CodeDocument.wordRanges(line: Long, pattern: String): Array<Utf8Range> {
+    val r = lineRange(line)
     val row = read(r)
     val offsets = ArrayList<Long>()
     var total = r.start
@@ -13,17 +13,40 @@ internal fun CodeDocument.wordRangeAt(offset: Long, pattern: String): Utf8Range 
         total += scalarBytes(ch)
     }
     offsets.add(total)
-    return Regex(pattern)
+    val words = ArrayList<Utf8Range>()
+    Regex(pattern)
         .use { expr ->
-            var left = Utf8Range(offset, offset)
             for (hit in expr.findAll(row)) {
-                val w = Utf8Range(offsets[hit.range.start], offsets[hit.range.endExclusive])
-                if (w.start > offset) break
-                if (w.start <= offset && offset < w.end) return@use w
-                if (w.end == offset) left = w
+                val a = offsets[hit.range.start]
+                val b = offsets[hit.range.endExclusive]
+                if (a < b) words.add(Utf8Range(a, b))
             }
-            left
         }
+    return words.toArray()
+}
+
+internal fun CodeDocument.wordRangeAt(offset: Long, pattern: String): Utf8Range {
+    var left = Utf8Range(offset, offset)
+    for (w in wordRanges(positionAt(offset).line, pattern)) {
+        if (w.start > offset) break
+        if (w.start <= offset && offset < w.end) return w
+        if (w.end == offset) left = w
+    }
+    return left
+}
+
+internal fun CodeDocument.languageWordEdge(offset: Long, forward: Boolean, pattern: String): Long {
+    val n = positionAt(offset).line
+    val row = lineRange(n)
+    if (forward && offset >= row.end || !forward && offset == row.start)
+        return adjacentGrapheme(this, offset, forward)
+    var previous = row.start
+    for (w in wordRanges(n, pattern)) {
+        if (forward && w.end > offset) return w.end
+        if (!forward && w.start >= offset) break
+        previous = w.start
+    }
+    return if (forward) row.end else previous
 }
 
 internal val defaultWordPattern: String get() = "[\\p{L}\\p{M}\\p{N}_]+"
@@ -36,7 +59,10 @@ private fun CodeEditorState.matchFromSelection(
     val original = selections
     val r = original.primary.range
     val fromCaret = r.start == r.end
-    val word = if (fromCaret) document.wordRangeAt(r.start, defaultWordPattern) else r
+    val word = if (fromCaret)
+        document.wordRangeAt(r.start, document.language?.wordPattern ?: defaultWordPattern)
+    else
+        r
     if (word.start == word.end) return false
     val controller = find
     controller.options = CodeFindOptions(matchCase = true)

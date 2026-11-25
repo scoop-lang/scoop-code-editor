@@ -1,0 +1,214 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+private class InputReplacement(
+    val text: String,
+    val anchor: Long,
+    val cursor: Long,
+    val generated: CodePair? = None,
+    val consumed: GeneratedPair? = None,
+    val range: Utf8Range? = None
+)
+
+private class InputResult {
+    var changes: CodeEditMap? = None
+}
+
+private fun CodeEditorState.applyInput(
+    kind: CodeEditKind,
+    make: (CodeSelection) -> InputReplacement
+): CodeEditResult {
+    val before = selections
+    val parts = Array<InputReplacement>(before.values.size) { i -> make(before.values[i]) }
+    val edits = Array<CodeEdit>(parts.size) { i ->
+        CodeEdit(parts[i].range ?: before.values[i].range, parts[i].text)
+    }
+    val capture = InputResult()
+    val result = executeEdits(
+        document.version,
+        edits,
+        Some(
+            { map ->
+                capture.changes = Some(map)
+                CodeSelections(
+                    Array<CodeSelection>(parts.size) { i ->
+                        val start = map.insertedRange(i).start
+                        CodeSelection.offsets(start + parts[i].anchor, start + parts[i].cursor)
+                    },
+                    before.primaryIndex
+                )
+            }
+        ),
+        kind
+    )
+    if (result != CodeEditResult.Applied && result != CodeEditResult.Unchanged) return result
+    val map = capture.changes!!
+    for (i in 0L..<parts.size) {
+        val part = parts[i]
+        when (val skip = part.consumed) {
+            case Some(val old) -> {
+                for (j in 0L..<generatedPairs.size)
+                    if (generatedPairs[j] === old) {
+                        generatedPairs.removeAt(j);
+                        break
+                    }
+            }
+
+            case None -> {}
+        }
+        when (val generated = part.generated) {
+            case Some(val p) -> {
+                val r = map.insertedRange(i)
+                generatedPairs.add(GeneratedPair(p, r.start, r.end - p.close.byteLength))
+            }
+
+            case None -> {}
+        }
+    }
+    return result
+}
+
+private fun literalInput(text: String): InputReplacement = InputReplacement(
+    text,
+    text.byteLength,
+    text.byteLength
+)
+
+private fun CodeEditorState.codeKey(
+    s: CodeSelection,
+    text: String,
+    lang: CodeLanguage
+): InputReplacement {
+    val r = s.range
+    if (r.start != r.end) {
+        for (p in lang.surroundingPairs)
+            if (p.open == text) {
+                val content = p.open + document.read(r) + p.close
+                return InputReplacement(
+                    content, p.open.byteLength + s.anchor.byteOffset - r.start,
+                    p.open.byteLength + s.cursor.byteOffset - r.start
+                )
+            }
+        return literalInput(text)
+    }
+    for (g in generatedPairs)
+        if (g.end == r.start && g.pair.close == text) {
+            val next = text.byteLength
+            return InputReplacement("", next, next, consumed = Some(g))
+        }
+    for (p in lang.autoClosingPairs)
+        if (p.open == text) {
+            if (r.end < document.byteLength) {
+                var allowed = false
+                for (next in lang.autoCloseBefore)
+                    if (document.hasText(r.end, next.toString())) {
+                        allowed = true;
+                        break
+                    }
+                if (!allowed) return literalInput(text)
+            }
+            if (p.open == p.close) {
+                var i = r.start
+                while (i > 0L && treeByte(document.root, i - 1L).toInt() == 92)
+                    i -= 1L
+                if ((r.start - i) % 2L == 1L) return literalInput(text)
+            }
+            return InputReplacement(p.open + p.close, p.open.byteLength, p.open.byteLength, Some(p))
+        }
+    return literalInput(text)
+}
+
+/** Types through the document's editing rules. Explicit range replacement and paste remain literal. */
+public fun CodeEditorState.typeText(text: String): CodeEditResult {
+    val lang = document.language ?: return replaceSelections(text)
+    if (text.byteLength == 0L) return replaceSelections(text)
+    var special = false
+    for (p in lang.autoClosingPairs)
+        if (p.open == text || p.close == text) special = true
+    for (p in lang.surroundingPairs)
+        if (p.open == text) special = true
+    if (!special) return replaceSelections(text)
+    return applyInput(CodeEditKind.Typing) { s -> codeKey(s, text, lang) }
+}
+
+internal fun CodeEditorState.ruleNewline(
+    rule: (String, String) -> CodeEnterIndent
+): CodeEditResult = applyInput(CodeEditKind.Command) { s ->
+    val doc = document
+    val at = s.range.start
+    val line = doc.positionAt(at).line
+    val row = doc.lineRange(line)
+    val indent = doc.indentRange(line)
+    val col = if (at < indent.end) at else indent.end
+    val base = doc.read(Utf8Range(indent.start, col))
+    val end = s.range.end
+    val right = doc.lineRange(doc.positionAt(end).line)
+    val after = doc.read(Utf8Range(if (end > right.end) right.end else end, right.end))
+    val before = doc.read(Utf8Range(row.start, if (at > row.end) row.end else at))
+    val mode = rule(before, after)
+    val eol = doc.endingAt(line)
+    val cells = indentColumns(base, options.tabSize)
+    val extra = indentation(cells + options.indentSize, options.tabSize, options.insertSpaces)
+    val prefix = when (mode) {
+        case Increase -> extra
+        case SplitPair -> extra
+        case Decrease ->
+            indentation(
+                if (cells > options.indentSize) cells - options.indentSize else 0L,
+                options.tabSize,
+                options.insertSpaces
+            )
+        case Keep -> base
+    }
+    val first = eol + prefix
+    InputReplacement(
+        if (mode == CodeEnterIndent.SplitPair) first + eol + base else first,
+        first.byteLength,
+        first.byteLength
+    )
+}
+
+internal fun CodeEditorState.generatedDeletion(at: Long): Utf8Range? {
+    for (p in generatedPairs) {
+        if (p.end == at && at == p.start + p.pair.open.byteLength)
+            return Some(Utf8Range(p.start, p.end + p.pair.close.byteLength))
+    }
+    return None
+}
+
+internal fun CodeEditorState.blockComment(pair: CodePair): CodeEditResult = applyInput(
+    CodeEditKind.Command
+) { s ->
+    val r = s.range
+    val open = pair.open
+    val close = pair.close
+    val outer = r.end -
+        r.start >=
+        open.byteLength +
+        close.byteLength &&
+        document.hasText(r.start, open) &&
+        document.hasText(r.end - close.byteLength, close)
+    val around = document.hasText(r.start - open.byteLength, open) && document.hasText(r.end, close)
+    if (outer || around) {
+        val inner = if (outer) Utf8Range(r.start + open.byteLength, r.end - close.byteLength) else r
+        val replace = if (outer)
+            r
+        else
+            Utf8Range(r.start - open.byteLength, r.end + close.byteLength)
+        val count = inner.end - inner.start
+        InputReplacement(
+            document.read(inner),
+            if (s.forward) 0L else count,
+            if (s.forward) count else 0L,
+            range = Some(replace)
+        )
+    } else {
+        val text = open + document.read(r) + close
+        InputReplacement(
+            text,
+            open.byteLength + s.anchor.byteOffset - r.start,
+            open.byteLength + s.cursor.byteOffset - r.start
+        )
+    }
+}

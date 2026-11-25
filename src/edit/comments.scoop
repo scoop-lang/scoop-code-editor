@@ -1,0 +1,55 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+public fun CodeEditorState.toggleLineComment(): CodeEditResult {
+    val config = document.language ?: return CodeEditResult.Unchanged
+    val marker = config.lineComment ?: return CodeEditResult.Unchanged
+    val lines = ArrayList<Long>()
+    val all = selectedLines()
+    for (block in all)
+        for (n in block.first..<block.last + 1L) {
+            if (document.indentRange(n).end < document.lineRange(n).end || block.first == block.last
+            )
+                lines.add(n)
+        }
+    var remove = true
+    for (n in lines)
+        if (!document.hasText(document.indentRange(n).end, marker)) {
+            remove = false;
+            break
+        }
+    val uncomment = remove
+    val edits = Array<CodeEdit>(lines.size) { i ->
+        val at = document.indentRange(lines[i]).end
+        if (uncomment) {
+            val end = at + marker.byteLength
+            CodeEdit(Utf8Range(at, if (document.hasText(end, " ")) end + 1L else end), "")
+        } else
+            CodeEdit(Utf8Range(at, at), marker + " ")
+    }
+    return executeEdits(document.version, edits)
+}
+
+public fun CodeEditorState.toggleBlockComment(): CodeEditResult {
+    val config = document.language ?: return CodeEditResult.Unchanged
+    val pair = config.blockComment ?: return CodeEditResult.Unchanged
+    return blockComment(pair)
+}
+
+internal fun CodeEditorState.installCodeActions() {
+    addAction(
+        "comment.line", "Toggle line comment", characterShortcut(
+            "/",
+            ShortcutModifiers(primary = true)
+        ),
+        { e -> !e.readOnly && (e.document.language?.lineComment ?: None) != None }
+    ) { e -> e.toggleLineComment() }
+    addAction(
+        "comment.block", "Toggle block comment", characterShortcut(
+            "a",
+            ShortcutModifiers(alt = true, shift = true)
+        ),
+        { e -> !e.readOnly && (e.document.language?.blockComment ?: None) != None }
+    ) { e -> e.toggleBlockComment() }
+}

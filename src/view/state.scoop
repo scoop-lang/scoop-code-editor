@@ -11,6 +11,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     internal var closed = false
     private var current = CodeSelections([CodeSelection.caret(0L)])
     public val selections: CodeSelections get() = current
+    internal val generatedPairs = ArrayList<GeneratedPair>()
     internal val actions = ArrayList<EditorAction>()
     internal val menuRevision = state(0L)
     internal var focusAfterLayout = false
@@ -100,6 +101,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         installLineActions()
         installFindActions()
         installViewActions()
+        installCodeActions()
     }
 
     public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents

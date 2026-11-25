@@ -83,7 +83,7 @@ internal class EditorInputSession(val editor: CodeEditorState) {
         applying = true
         try {
             val result = when (typing) {
-                case Some(val text) -> editor.replaceSelections(text)
+                case Some(val text) -> editor.typeText(text)
                 case None -> applyPrimary(work)
             }
             if (result != CodeEditResult.Applied && result != CodeEditResult.Unchanged) return None

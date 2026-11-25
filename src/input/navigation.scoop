@@ -65,6 +65,10 @@ internal fun EditorInk.destination(
         case ParagraphEnd -> return TextPosition(doc.lineRange(logical.line).end)
         else -> {}
     }
+    val words = doc.language?.wordPattern
+    if (words != None && (move == TextMovement.WordBackward || move == TextMovement.WordForward)) {
+        return TextPosition(doc.languageWordEdge(cursor.byteOffset, forward, words!!))
+    }
     return withLine(logical.line, frame) { row ->
         val at = if (cursor.byteOffset > row.range.end)
             TextPosition(row.range.end, cursor.affinity)
@@ -113,6 +117,23 @@ internal fun EditorInk.destination(
             }
         } else {
             val next = layout.moveCaret(pos, action, preferred)
+            if (words !=
+                None &&
+                (move == TextMovement.WordLeft || move == TextMovement.WordRight) &&
+                next !=
+                None &&
+                next!!.position.byteOffset !=
+                pos.byteOffset
+            ) {
+                return@withLine TextPosition(
+                    doc
+                        .languageWordEdge(
+                            cursor.byteOffset,
+                            next!!.position.byteOffset > pos.byteOffset,
+                            words!!
+                        )
+                )
+            }
             if (next != None && next!!.position != pos) return@withLine row.source(next!!.position)
             if (move ==
                 TextMovement.LineStart ||

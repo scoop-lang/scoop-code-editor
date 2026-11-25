@@ -33,6 +33,14 @@ private fun EditorInk.pointerUnit(
         return CodeSelection.offsets(r.start, r.end)
     }
     if (unit == SelectionUnit.Word) {
+        when (val language = editor.document.language) {
+            case Some(val configured) -> {
+                val word = editor.document.wordRangeAt(at.byteOffset, configured.wordPattern)
+                if (word.end > word.start) return CodeSelection.offsets(word.start, word.end)
+            }
+
+            case None -> {}
+        }
         val pos = frame.displayPosition(at)
         val row = frame.rowAt(pos) ?: return CodeSelection(at, at)
         val r = row.ink.layout.wordRange(row.display(pos))

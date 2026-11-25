@@ -1,0 +1,132 @@
+package scoop.ui.editor
+
+import scoop.regex.Regex
+import scoop.text.endsWith
+import scoop.text.startsWith
+import scoop.text.trimEnd
+import scoop.text.trimStart
+import scoop.window.Utf8Range
+
+/** Literal opening and closing delimiters expressed in source text. */
+public struct CodePair(val open: String, val close: String)
+
+private fun validatePair(pair: CodePair) {
+    if (pair.open.byteLength == 0L || pair.close.byteLength == 0L)
+        throw IllegalArgumentException(Some("empty code delimiter"))
+}
+
+public enum CodeEnterIndent {
+    Keep, Increase, Decrease, SplitPair
+}
+
+/** Describes editing rules for one document. The callback receives the text on both sides of Enter. */
+public class CodeLanguage public constructor(
+    public val wordPattern: String = "[\\p{L}\\p{M}\\p{N}_]+",
+    public val lineComment: String? = None,
+    public val blockComment: CodePair? = None,
+    public val brackets: Array<CodePair> = [],
+    public val autoClosingPairs: Array<CodePair> = brackets,
+    public val autoCloseBefore: String = ";:.,=}])> \t\r\n",
+    public val surroundingPairs: Array<CodePair> = autoClosingPairs,
+    public val enter: ((String, String) -> CodeEnterIndent)? = None
+) {
+    init {
+        for (pair in brackets)
+            validatePair(pair)
+        for (pair in autoClosingPairs)
+            validatePair(pair)
+        for (pair in surroundingPairs)
+            validatePair(pair)
+        when (blockComment) {
+            case Some(val pair) -> validatePair(pair);
+            case None -> {}
+        }
+        Regex(wordPattern).use { _ -> Unit }
+        if (lineComment?.byteLength == Some(0L))
+            throw IllegalArgumentException(Some("empty line comment"))
+    }
+}
+
+public fun scoopCodeLanguage(): CodeLanguage {
+    val brackets = [CodePair("(", ")"), CodePair("[", "]"), CodePair("{", "}")]
+    return CodeLanguage(
+        lineComment = Some("//"), blockComment = Some(CodePair("/*", "*/")), brackets = brackets,
+        autoClosingPairs = [
+            brackets[0L],
+            brackets[1L],
+            brackets[2L],
+            CodePair("\"", "\""),
+            CodePair("'", "'")
+        ],
+        enter = Some({ before, after -> scoopEnterIndent(brackets, before, after) })
+    )
+}
+
+private fun scoopEnterIndent(
+    brackets: Array<CodePair>,
+    before: String,
+    after: String
+): CodeEnterIndent {
+    val left = before.trimEnd()
+    val right = after.trimStart()
+    for (p in brackets) {
+        if (left.endsWith(p.open))
+            return if (right.startsWith(p.close))
+                CodeEnterIndent.SplitPair
+            else
+                CodeEnterIndent.Increase
+        if (left.byteLength == 0L && right.startsWith(p.close)) return CodeEnterIndent.Decrease
+    }
+    return CodeEnterIndent.Keep
+}
+
+internal fun CodeDocument.hasText(at: Long, text: String): Boolean {
+    val end = at + text.byteLength
+    return at >=
+        0L &&
+        end <=
+        byteLength &&
+        scalarBoundary(root, at) &&
+        scalarBoundary(root, end) &&
+        read(Utf8Range(at, end)) ==
+        text
+}
+
+internal class GeneratedPair(val pair: CodePair, var start: Long, var end: Long)
+
+internal fun CodeEditorState.mapGeneratedPairs(map: CodeEditMap) {
+    if (generatedPairs.size == 0L) return
+    var i = generatedPairs.size
+    while (i > 0L) {
+        i -= 1L
+        val p = generatedPairs[i]
+        val a = map.map(p.start, CodeStickiness.After)
+        val b = map.map(p.end, CodeStickiness.After)
+        var replaced = false
+        for (edit in map.changes) {
+            val r = edit.oldRange
+            if (r.start !=
+                r.end &&
+                (
+                    (r.end > p.start && r.start < p.start + p.pair.open.byteLength) ||
+                        (r.end > p.end && r.start < p.end + p.pair.close.byteLength)
+                )
+            ) {
+                replaced = true;
+                break
+            }
+        }
+        if (replaced ||
+            b <
+            a +
+            p.pair.open.byteLength ||
+            !document.hasText(a, p.pair.open) ||
+            !document.hasText(b, p.pair.close)
+        )
+            generatedPairs.removeAt(i)
+        else {
+            p.start = a;
+            p.end = b
+        }
+    }
+}

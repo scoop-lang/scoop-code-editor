@@ -92,6 +92,7 @@ private fun CodeDocument.commitPlan(
     for (view in views) {
         view.decorationStore.map(plan.mapping)
         view.mapWidgets(plan.mapping)
+        view.mapGeneratedPairs(plan.mapping)
         val matching = when (owner) {
             case Some(val active) -> active === view;
             case None -> false

@@ -17,7 +17,7 @@ import scoop.ui.component.*
 import scoop.ui.editor.*
 
 class SplitEditor(scope: ComponentScope) : Component(scope) {
-    private val document = CodeDocument("val count = 1\n")
+    private val document = CodeDocument("val count = 1\n", Some(scoopCodeLanguage()))
     private val left = scope.resource { CodeEditorState(document) }
     private val right = scope.resource { CodeEditorState(document) }
     private val find = scope.resource { CodeFind(left) }

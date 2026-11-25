@@ -83,15 +83,20 @@ public fun CodeEditorState.replaceSelections(
     kind: CodeEditKind = CodeEditKind.Typing
 ): CodeEditResult = replaceEach(kind) { _ -> text }
 
-public fun CodeEditorState.insertNewline(): CodeEditResult = replaceEach(CodeEditKind.Command) {
-    selection
-    ->
-    val doc = document
-    val offset = selection.range.start
-    val line = doc.positionAt(offset).line
-    val prefix = doc.indentRange(line)
-    return@replaceEach doc.endingAt(line) +
-        doc.read(Utf8Range(prefix.start, if (offset < prefix.end) offset else prefix.end))
+public fun CodeEditorState.insertNewline(): CodeEditResult {
+    val rule = document.language?.enter ?: None
+    when (rule) {
+        case Some(val applyRule) -> return ruleNewline(applyRule);
+        case None -> {}
+    }
+    return replaceEach(CodeEditKind.Command) { selection ->
+        val doc = document
+        val offset = selection.range.start
+        val line = doc.positionAt(offset).line
+        val prefix = doc.indentRange(line)
+        return@replaceEach doc.endingAt(line) +
+            doc.read(Utf8Range(prefix.start, if (offset < prefix.end) offset else prefix.end))
+    }
 }
 
 public fun CodeEditorState.deleteGrapheme(forward: Boolean): CodeEditResult {
@@ -103,7 +108,10 @@ public fun CodeEditorState.deleteGrapheme(forward: Boolean): CodeEditResult {
                 adjacentGrapheme(document, r.start, true)
             else
                 backspaceStart(r.start)
-            r = if (forward) Utf8Range(r.start, offset) else Utf8Range(offset, r.start)
+            r = if (forward)
+                Utf8Range(r.start, offset)
+            else
+                generatedDeletion(r.start) ?: Utf8Range(offset, r.start)
         }
         if (r.start == r.end) continue
         val i = edits.size - 1L
