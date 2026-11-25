@@ -1,0 +1,53 @@
+package scoop.ui.editor
+
+public class CodeEditorState public constructor(public val document: CodeDocument) : Closeable {
+    internal val identity = EditorIdentity()
+    internal val selectionEvents = EditorSignal<CodeSelections>()
+    internal var closed = false
+    private var current = CodeSelections([CodeSelection.caret(0L)])
+    public val selections: CodeSelections get() = current
+    public var readOnly: Boolean = false
+
+    init {
+        document.attach(this)
+    }
+
+    public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents
+        .listen(listener)
+
+    public fun setSelections(values: List<CodeSelection>, primaryIndex: Long = 0L) {
+        if (closed || document.busy)
+            throw IllegalStateException(Some("editor is closed or delivering an edit"))
+        val next = normalizedSelections(document.root, CodeSelections(values, primaryIndex)) ?:
+            throw IllegalArgumentException(Some("invalid editor selections"))
+        breakUndoGroup()
+        if (install(next)) selectionEvents.emit(next)
+    }
+
+    internal fun install(next: CodeSelections): Boolean {
+        if (sameSelections(current, next)) return false
+        current = next
+        return true
+    }
+
+    public fun executeEdits(
+        expectedVersion: Long,
+        edits: List<CodeEdit>,
+        selectAfter: ((CodeEditMap) -> CodeSelections)? = None,
+        kind: CodeEditKind = CodeEditKind.Command
+    ): CodeEditResult = document.transact(Some(this), expectedVersion, edits, selectAfter, kind)
+
+    public fun undo(): CodeEditResult = document.replay(this, false)
+    public fun redo(): CodeEditResult = document.replay(this, true)
+    public fun breakUndoGroup() {
+        document.history.boundary = true
+    }
+
+    public override fun close() {
+        if (closed) return
+        closed = true
+        breakUndoGroup()
+        document.detach(this)
+        selectionEvents.clear()
+    }
+}

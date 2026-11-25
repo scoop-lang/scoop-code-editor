@@ -1,0 +1,67 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.window.Utf8Range
+
+internal class EditPlan(val root: PieceNode?, val mapping: CodeEditMap)
+
+internal fun prepareEdits(doc: CodeDocument, edits: List<CodeEdit>): EditPlan? {
+    val order = ArrayList<Long>()
+    for (i in 0L..<edits.size) {
+        if (!validRange(doc.root, edits[i].range)) return None
+        order.add(i)
+    }
+    order
+        .sortWith(
+            comparatorOf<Long> { a, b -> edits[a].range.start.compareTo(edits[b].range.start) }
+        )
+    for (i in 1L..<order.size) {
+        val previous = edits[order[i - 1L]].range
+        val next = edits[order[i]].range
+        if (next.start == previous.start || next.start < previous.end) return None
+    }
+    val ranges = MutableArray<Utf8Range>(edits.size) { _ -> Utf8Range(0L, 0L) }
+    val changed = ArrayList<CodeChange>()
+    var consumed = 0L
+    var delta = 0L
+    var rest = doc.root
+    var assembled: PieceNode? = None
+    for (i in order) {
+        val edit = edits[i]
+        val old = edit.range
+        val size = edit.text.byteLength
+        val newStart = old.start + delta
+        val fresh = Utf8Range(newStart, newStart + size)
+        ranges[i] = fresh
+        if (old.end - old.start == size && (size == 0L || doc.read(old) == edit.text)) continue
+        val from = splitPieces(rest, old.start - consumed)
+        val to = splitPieces(from.after, old.end - old.start)
+        val added = doc.writer.write(edit.text)
+        assembled = concatPieces(concatPieces(assembled, from.before), added)
+        changed.add(CodeChange(old, fresh, to.before, added))
+        rest = to.after
+        consumed = old.end
+        delta += size - (old.end - old.start)
+    }
+    return Some(
+        EditPlan(concatPieces(assembled, rest), CodeEditMap(changed.toArray(), ranges.toArray()))
+    )
+}
+
+internal fun historyPlan(root: PieceNode?, changes: Array<CodeChange>): EditPlan {
+    var rest = root
+    var assembled: PieceNode? = None
+    var consumed = 0L
+    val results = ArrayList<Utf8Range>()
+    for (change in changes) {
+        val old = change.oldRange
+        val from = splitPieces(rest, old.start - consumed)
+        val to = splitPieces(from.after, old.end - old.start)
+        assembled = concatPieces(concatPieces(assembled, from.before), change.added)
+        rest = to.after
+        consumed = old.end
+        results.add(change.newRange)
+    }
+    return EditPlan(concatPieces(assembled, rest), CodeEditMap(changes, results.toArray()))
+}

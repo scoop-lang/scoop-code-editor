@@ -68,6 +68,29 @@ public class CodeSnapshot internal constructor(
 }
 
 public class CodeDocument public constructor(text: String = "") {
+    internal val views = ArrayList<CodeEditorState>()
+    internal val history = EditHistory()
+    internal val events = EditorSignal<CodeDocumentChange>()
+    internal var busy = false
+    internal fun attach(state: CodeEditorState) {
+        views.add(state)
+    }
+    internal fun detach(state: CodeEditorState) {
+        for (i in 0L..<views.size) {
+            if (views[i] === state) {
+                views.removeAt(i);
+                return
+            }
+        }
+    }
+    public fun onChange(listener: (CodeDocumentChange) -> Unit): Closeable = events.listen(listener)
+    public fun applyEdits(expectedVersion: Long, edits: List<CodeEdit>): CodeEditResult = transact(
+        None,
+        expectedVersion,
+        edits,
+        None,
+        CodeEditKind.Command
+    )
     internal val writer = PieceWriter()
     internal var root: PieceNode? = writer.write(text)
     private var revision: Long = 0L

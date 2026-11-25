@@ -1,0 +1,113 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+internal class EditorIdentity
+
+internal class HistoryItem(
+    val changes: Array<CodeChange>,
+    val owner: EditorIdentity?,
+    val before: CodeSelections?,
+    val after: CodeSelections?,
+    val kind: CodeEditKind
+)
+
+internal fun inverseChanges(changes: Array<CodeChange>): Array<CodeChange> {
+    val inverse = ArrayList<CodeChange>()
+    for (c in changes) {
+        val i = inverse.size - 1L
+        if (i >= 0L && inverse[i].oldRange.start == c.newRange.start) {
+            val previous = inverse[i]
+            inverse[i] = CodeChange(
+                Utf8Range(previous.oldRange.start, c.newRange.end),
+                Utf8Range(previous.newRange.start, c.oldRange.end), concatPieces(
+                    previous.removed,
+                    c.added
+                ),
+                concatPieces(previous.added, c.removed)
+            )
+        } else
+            inverse.add(CodeChange(c.newRange, c.oldRange, c.added, c.removed))
+    }
+    return inverse.toArray()
+}
+
+private fun mergeHistory(a: HistoryItem, b: HistoryItem): HistoryItem? {
+    val owner = a.owner ?: return None
+    val other = b.owner ?: return None
+    val after = a.after ?: return None
+    val before = b.before ?: return None
+    if (owner !==
+        other ||
+        a.kind !=
+        b.kind ||
+        !sameSelections(after, before) ||
+        a.changes.size !=
+        b.changes.size
+    )
+        return None
+    if (a.kind !=
+        CodeEditKind.Typing &&
+        a.kind !=
+        CodeEditKind.Backspace &&
+        a.kind !=
+        CodeEditKind.DeleteForward
+    )
+        return None
+    val combined = ArrayList<CodeChange>()
+    var delta = 0L
+    for (i in 0L..<a.changes.size) {
+        val x = a.changes[i]
+        val y = b.changes[i]
+        val ySize = y.oldRange.end - y.oldRange.start
+        var old = x.oldRange
+        var added = x.added
+        var removed = x.removed
+        if (a.kind == CodeEditKind.Typing) {
+            if (ySize !=
+                0L ||
+                x.newRange.end !=
+                y.oldRange.start ||
+                x.newRange.end ==
+                x.newRange.start
+            )
+                return None
+            added = concatPieces(x.added, y.added)
+        } else {
+            if (x.newRange.start != x.newRange.end || y.newRange.start != y.newRange.end)
+                return None
+            if (a.kind == CodeEditKind.Backspace) {
+                if (y.oldRange.end != x.newRange.start) return None
+                old = Utf8Range(old.start - ySize, old.end)
+                removed = concatPieces(y.removed, removed)
+            } else {
+                if (y.oldRange.start != x.newRange.start) return None
+                old = Utf8Range(old.start, old.end + ySize)
+                removed = concatPieces(removed, y.removed)
+            }
+        }
+        if (i > 0L && combined[i - 1L].oldRange.end > old.start) return None
+        val length = treeMeasure(added).bytes
+        val fresh = Utf8Range(old.start + delta, old.start + delta + length)
+        combined.add(CodeChange(old, fresh, removed, added))
+        delta += length - (old.end - old.start)
+    }
+    return Some(HistoryItem(combined.toArray(), a.owner, a.before, b.after, a.kind))
+}
+
+internal class EditHistory {
+    internal val undo = ArrayList<HistoryItem>()
+    internal val redo = ArrayList<HistoryItem>()
+    internal var boundary = true
+
+    internal fun record(item: HistoryItem) {
+        redo.clear()
+        val last = undo.size - 1L
+        val joined = if (!boundary && last >= 0L) mergeHistory(undo[last], item) else None
+        when (joined) {
+            case Some(val group) -> undo[last] = group;
+            case None -> undo.add(item)
+        }
+        boundary = false
+    }
+}

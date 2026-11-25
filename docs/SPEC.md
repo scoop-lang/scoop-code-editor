@@ -7,3 +7,11 @@
 `read(Utf8Range)` 只复制请求的正文。`lineRange(line, includeBreak)` 默认返回行内容，传入 true 时包括该行分隔符。`positionAt(offset)` 和 `offsetAt(CodePosition(line, column))` 在文档字节和行内字节列之间转换。CRLF 中间位置折合到前一行末。越界或切开 UTF-8 标量的请求抛出 IllegalArgumentException。
 
 `snapshot()` 固定当前版本并封存追加块。不可变红黑树允许快照共享当时的根和片段描述，取得快照的耗时与文档长度无关。快照保留相同的读取与定位能力，`forEachChunk` 按正文顺序交付独立的字符串片段，允许调用方在遍历中修改实时文档。
+
+## 编辑与选区
+
+`CodeEdit` 的范围以旧正文为准。`applyEdits` 针对期望版本原子提交。结果为 Applied、Unchanged、Stale、Invalid、ReadOnly 或 Busy。通知或计算选区时重入同一文档返回 Busy。相邻非空替换合法；同起点或相交的替换无效。等值替换只提供结果范围，不改变正文、历史和内部位置。
+
+`CodeEditorState(document)` 拥有有方向和视觉偏向的选区。相交范围合并，重复光标去重，落在非空范围端点的光标归入该范围。主身份跟随所属组，两个非空范围相接时共同端点的空主光标归入右组。`executeEdits` 的可选同步回调按输入顺序查询新范围并返回最终选区。回调异常或最终选区无效时整批失败。被动光标跟到插入内容之后，非空选区默认排除边缘插入。
+
+同一文档的所有视图先完成映射，再通知观察者。`onChange` 和 `onSelectionChange` 返回可重复关闭的登记。撤销和重做共享一条文档历史，发起操作的可写视图恢复交互命令记录的选区。连续、同视图、同方向的键入或删除可合并。粘贴、组合提交、移动选区和焦点变化划分历史边界。

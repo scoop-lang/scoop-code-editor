@@ -1,0 +1,125 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.graphics.text.TextPosition
+import scoop.window.Utf8Range
+
+public struct CodeSelection(val anchor: TextPosition, val cursor: TextPosition) {
+    public val forward: Boolean get() = anchor.byteOffset <= cursor.byteOffset
+    public val range: Utf8Range
+        get() = if (forward)
+            Utf8Range(anchor.byteOffset, cursor.byteOffset)
+        else
+            Utf8Range(cursor.byteOffset, anchor.byteOffset)
+
+    public companion object {
+        public fun offsets(anchor: Long, cursor: Long): CodeSelection = CodeSelection(
+            TextPosition(anchor),
+            TextPosition(cursor)
+        )
+        public fun caret(offset: Long): CodeSelection = offsets(offset, offset)
+    }
+}
+
+public class CodeSelections public constructor(
+    values: List<CodeSelection>,
+    public val primaryIndex: Long = 0L
+) {
+    public val values: Array<CodeSelection> = values.toArray()
+    public val primary: CodeSelection get() = values[primaryIndex]
+}
+
+private class SelectionGroup(val selection: CodeSelection, val order: Long, var primary: Boolean) {
+    internal var left = if (selection.forward) selection.anchor else selection.cursor
+    internal var right = if (selection.forward) selection.cursor else selection.anchor
+    internal var direction = selection.forward
+    internal var leader = order
+
+    internal fun absorb(next: SelectionGroup) {
+        if (next.right.byteOffset > right.byteOffset) right = next.right
+        if (next.primary || (!primary && next.order < leader)) {
+            direction = next.direction
+            leader = next.order
+        }
+        primary = primary || next.primary
+    }
+
+    internal fun value(): CodeSelection = if (direction)
+        CodeSelection(left, right)
+    else
+        CodeSelection(right, left)
+}
+
+internal fun normalizedSelections(root: PieceNode?, input: CodeSelections): CodeSelections? {
+    if (input.primaryIndex < 0L || input.primaryIndex >= input.values.size) return None
+    val spans = ArrayList<SelectionGroup>()
+    val carets = ArrayList<SelectionGroup>()
+    for (i in 0L..<input.values.size) {
+        val sel = input.values[i]
+        val range = sel.range
+        if (!validRange(root, range)) return None
+        val group = SelectionGroup(sel, i, i == input.primaryIndex)
+        if (range.start == range.end) carets.add(group) else spans.add(group)
+    }
+    val byStart = comparatorOf<SelectionGroup> { a, b ->
+        val byOffset = a.left.byteOffset.compareTo(b.left.byteOffset)
+        if (byOffset != 0) byOffset else a.order.compareTo(b.order)
+    }
+    spans.sortWith(byStart)
+    val groups = ArrayList<SelectionGroup>()
+    for (span in spans) {
+        if (groups.size > 0L && groups[groups.size - 1L].right.byteOffset > span.left.byteOffset)
+            groups[groups.size - 1L].absorb(span)
+        else
+            groups.add(span)
+    }
+    val spanCount = groups.size
+    carets.sortWith(byStart)
+    var spanIndex = -1L
+    var lastCaret: SelectionGroup? = None
+    for (caret in carets) {
+        val offset = caret.left.byteOffset
+        while (spanIndex + 1L < spanCount && groups[spanIndex + 1L].left.byteOffset <= offset)
+            spanIndex += 1L
+        if (spanIndex >= 0L && groups[spanIndex].right.byteOffset >= offset) {
+            if (caret.primary) groups[spanIndex].primary = true
+        } else if (lastCaret?.left?.byteOffset == Some(offset)) {
+            if (caret.primary) {
+                lastCaret!!.primary = true;
+                lastCaret!!.left = caret.left;
+                lastCaret!!.right = caret.right
+            }
+        } else {
+            groups.add(caret)
+            lastCaret = Some(caret)
+        }
+    }
+    groups.sortWith(byStart)
+    val values = ArrayList<CodeSelection>()
+    var primary = 0L
+    for (group in groups) {
+        if (group.primary) primary = values.size
+        values.add(group.value())
+    }
+    return Some(CodeSelections(values, primary))
+}
+
+internal fun sameSelections(a: CodeSelections, b: CodeSelections): Boolean {
+    if (a.primaryIndex != b.primaryIndex || a.values.size != b.values.size) return false
+    for (i in 0L..<a.values.size) {
+        val x = a.values[i]
+        val y = b.values[i]
+        if (x.anchor.byteOffset !=
+            y.anchor.byteOffset ||
+            x.anchor.affinity !=
+            y.anchor.affinity ||
+            x.cursor.byteOffset !=
+            y.cursor.byteOffset ||
+            x.cursor.affinity !=
+            y.cursor.affinity
+        )
+            return false
+    }
+    return true
+}

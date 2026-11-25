@@ -1,0 +1,47 @@
+package scoop.ui.editor
+
+internal class EditorRegistration(remove: () -> Unit) : Closeable {
+    private var removal: (() -> Unit)? = Some(remove)
+    internal val active: Boolean
+        get() = when (removal) {
+            case Some(_) -> true;
+            case None -> false
+        }
+    public override fun close() {
+        val action = removal ?: return
+        removal = None
+        action()
+    }
+}
+
+private class EditorListener<T>(val call: (T) -> Unit) {
+    internal var active = true
+}
+
+internal class EditorSignal<T> {
+    private val slots = ArrayList<EditorListener<T>>()
+
+    internal fun listen(call: (T) -> Unit): Closeable {
+        val slot = EditorListener<T>(call)
+        slots.add(slot)
+        return EditorRegistration {
+            slot.active = false
+            for (i in 0L..<slots.size) {
+                if (slots[i] === slot) {
+                    slots.removeAt(i);
+                    break
+                }
+            }
+        }
+    }
+    internal fun emit(value: T) {
+        for (slot in slots.toArray()) {
+            if (slot.active) slot.call(value)
+        }
+    }
+    internal fun clear() {
+        for (slot in slots)
+            slot.active = false;
+        slots.clear()
+    }
+}

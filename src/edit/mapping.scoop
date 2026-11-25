@@ -1,0 +1,81 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.TextPosition
+import scoop.window.Utf8Range
+
+public struct CodeEdit(val range: Utf8Range, val text: String)
+
+public enum CodeEditResult {
+    Applied, Unchanged, Stale, Invalid, ReadOnly, Busy
+}
+
+public enum CodeEditKind {
+    Command, Typing, Backspace, DeleteForward, Paste, Composition, Undo, Redo
+}
+
+public enum CodeStickiness {
+    Before, After
+}
+
+public class CodeChange internal constructor(
+    public val oldRange: Utf8Range,
+    public val newRange: Utf8Range,
+    internal val removed: PieceNode?,
+    internal val added: PieceNode?
+) {
+    public val text: String get() = treeRead(added, Utf8Range(0L, newRange.end - newRange.start))
+}
+
+public class CodeEditMap internal constructor(
+    public val changes: Array<CodeChange>,
+    private val inserted: Array<Utf8Range>
+) {
+    public fun insertedRange(index: Long): Utf8Range = inserted[index]
+
+    public fun map(offset: Long, bias: CodeStickiness = CodeStickiness.After): Long {
+        var low = 0L
+        var high = changes.size
+        while (low < high) {
+            val mid = low + (high - low) / 2L
+            if (changes[mid].oldRange.start <= offset) low = mid + 1L else high = mid
+        }
+        if (low == 0L) return offset
+        val change = changes[low - 1L]
+        val old = change.oldRange
+        val next = change.newRange
+        if (offset > old.end) return next.end + (offset - old.end)
+        if (old.start < old.end) {
+            if (offset == old.start) return next.start
+            if (offset == old.end) return next.end
+        }
+        return if (bias == CodeStickiness.Before) next.start else next.end
+    }
+
+    internal fun mapSelections(set: CodeSelections): CodeSelections {
+        val values = ArrayList<CodeSelection>()
+        for (s in set.values) {
+            val r = s.range
+            val start = map(r.start, CodeStickiness.After)
+            val end = if (r.start == r.end) start else map(r.end, CodeStickiness.Before)
+            val a = if (s.forward) start else end
+            val b = if (s.forward) end else start
+            values
+                .add(
+                    CodeSelection(
+                        TextPosition(a, s.anchor.affinity),
+                        TextPosition(b, s.cursor.affinity)
+                    )
+                )
+        }
+        return CodeSelections(values, set.primaryIndex)
+    }
+}
+
+public class CodeDocumentChange internal constructor(
+    public val oldVersion: Long,
+    public val version: Long,
+    public val mapping: CodeEditMap,
+    public val kind: CodeEditKind
+) {
+    public val changes: Array<CodeChange> get() = mapping.changes
+}

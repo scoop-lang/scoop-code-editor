@@ -1,0 +1,196 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+private fun edit(a: Long, b: Long, text: String): CodeEdit = CodeEdit(Utf8Range(a, b), text)
+
+private fun allText(doc: CodeDocument): String = doc.read(Utf8Range(0L, doc.byteLength))
+
+private fun caretsAfter(map: CodeEditMap, count: Long): CodeSelections = CodeSelections(
+    Array<CodeSelection>(count) { i -> CodeSelection.caret(map.insertedRange(i).end) }
+)
+
+@Test
+private class EditorTransactionTests {
+    @Test
+    fun batchMappingUsesCallerOrderAndPublishesBothViewsTogether() {
+        val doc = CodeDocument("a中\r\nb")
+        val left = CodeEditorState(doc)
+        val right = CodeEditorState(doc)
+        right.setSelections([CodeSelection.offsets(7L, 6L)])
+        val seen = ArrayList<Long>()
+        val sub = doc
+            .onChange { change ->
+                assertEquals(0L, change.oldVersion)
+                assertEquals(1L, change.version)
+                assertEquals(0L, change.changes[0L].oldRange.start)
+                assertEquals(2L, change.changes[0L].newRange.end)
+                assertEquals("字", change.changes[1L].text)
+                assertEquals(10L, right.selections.primary.anchor.byteOffset)
+                assertEquals(7L, right.selections.primary.cursor.byteOffset)
+                assertEquals(10L, left.selections.primary.cursor.byteOffset)
+                seen.add(change.version)
+            }
+        val result = left
+            .executeEdits(
+                0L, [edit(6L, 7L, "字"), edit(0L, 1L, "xy")],
+                Some({ map -> CodeSelections([CodeSelection.caret(map.insertedRange(0L).end)]) })
+            )
+        assertEquals(CodeEditResult.Applied, result)
+        assertEquals(1L, seen.size)
+        assertEquals("xy中\r\n字", allText(doc))
+        sub.close()
+        assertEquals(CodeEditResult.Applied, right.undo())
+        assertEquals("a中\r\nb", allText(doc))
+        assertEquals(0L, right.selections.primary.cursor.byteOffset)
+        assertEquals(CodeEditResult.Applied, right.redo())
+        assertEquals(10L, right.selections.primary.cursor.byteOffset)
+        left.close()
+        right.close()
+    }
+
+    @Test
+    fun invalidAndEqualEditsAreAtomic() {
+        val doc = CodeDocument("a中b")
+        val state = CodeEditorState(doc)
+        state.setSelections([CodeSelection.caret(1L)])
+        assertEquals(
+            CodeEditResult.Invalid,
+            doc.applyEdits(0L, [edit(0L, 1L, "x"), edit(2L, 4L, "")])
+        )
+        assertEquals(
+            CodeEditResult.Invalid,
+            doc.applyEdits(0L, [edit(1L, 4L, "X"), edit(1L, 1L, "Y")])
+        )
+        assertEquals(CodeEditResult.Stale, doc.applyEdits(1L, []))
+        assertEquals(
+            CodeEditResult.Invalid,
+            state
+                .executeEdits(
+                    0L, [edit(0L, 1L, "🐈")],
+                    Some({ _ -> CodeSelections([CodeSelection.caret(1L)]) })
+                )
+        )
+        assertEquals(
+            CodeEditResult.Invalid,
+            state
+                .executeEdits(
+                    0L, [edit(0L, 1L, "x")],
+                    Some({ _ -> throw IllegalArgumentException() })
+                )
+        )
+        assertEquals(
+            CodeEditResult.Unchanged,
+            state
+                .executeEdits(
+                    0L, [edit(0L, 5L, "a中b")],
+                    Some({ m -> CodeSelections([CodeSelection.caret(m.map(4L))]) })
+                )
+        )
+        assertEquals(4L, state.selections.primary.cursor.byteOffset)
+        assertEquals(0L, doc.version)
+        assertEquals("a中b", allText(doc))
+        state.readOnly = true
+        assertEquals(CodeEditResult.ReadOnly, state.executeEdits(0L, [edit(0L, 1L, "")]))
+        assertEquals(CodeEditResult.ReadOnly, state.undo())
+        assertEquals(CodeEditResult.Applied, doc.applyEdits(0L, [edit(0L, 1L, "x")]))
+        assertEquals("x中b", allText(doc))
+    }
+
+    @Test
+    fun adjacentDeletesUndoInOriginalOrderAndListenersCanUnsubscribe() {
+        val doc = CodeDocument("abc")
+        val state = CodeEditorState(doc)
+        val seen = ArrayList<CodeDocumentChange>()
+        val sub = doc
+            .onChange { change ->
+                seen.add(change)
+                assertEquals(CodeEditResult.Busy, doc.applyEdits(doc.version, []))
+            }
+        assertEquals(
+            CodeEditResult.Applied,
+            doc.applyEdits(0L, [edit(1L, 2L, ""), edit(0L, 1L, ""), edit(2L, 2L, "!")])
+        )
+        assertEquals("!c", allText(doc))
+        assertEquals(CodeEditResult.Applied, state.undo())
+        assertEquals("abc", allText(doc))
+        assertEquals(1L, seen[1L].changes.size)
+        assertEquals("ab", seen[1L].changes[0L].text)
+        sub.close()
+        sub.close()
+        state.redo()
+        assertEquals("!c", allText(doc))
+        assertEquals(2L, seen.size)
+    }
+
+    @Test
+    fun normalizedSelectionsKeepDirectionAndChooseRightGroupForSharedCaret() {
+        val state = CodeEditorState(CodeDocument("0123456789"))
+        state
+            .setSelections(
+                [
+                    CodeSelection.offsets(4L, 1L),
+                    CodeSelection.offsets(3L, 5L),
+                    CodeSelection.offsets(8L, 5L),
+                    CodeSelection.caret(5L),
+                    CodeSelection.caret(9L),
+                    CodeSelection.caret(9L)
+                ],
+                3L
+            )
+        assertEquals(3L, state.selections.values.size)
+        assertEquals(1L, state.selections.primaryIndex)
+        assertEquals(5L, state.selections.values[0L].anchor.byteOffset)
+        assertEquals(1L, state.selections.values[0L].cursor.byteOffset)
+        assertEquals(8L, state.selections.primary.anchor.byteOffset)
+        assertEquals(5L, state.selections.primary.cursor.byteOffset)
+        assertEquals(9L, state.selections.values[2L].cursor.byteOffset)
+    }
+
+    @Test
+    fun consecutiveMulticursorTypingAndDirectionalDeletionShareHistory() {
+        val doc = CodeDocument("a-b")
+        val view = CodeEditorState(doc)
+        view.setSelections([CodeSelection.caret(1L), CodeSelection.caret(3L)])
+        for (text in ["1", "2", "3"]) {
+            val edits = Array<CodeEdit>(2L) { i -> CodeEdit(view.selections.values[i].range, text) }
+            val result = view
+                .executeEdits(
+                    doc.version,
+                    edits,
+                    Some({ m -> caretsAfter(m, 2L) }),
+                    CodeEditKind.Typing
+                )
+            assertEquals(CodeEditResult.Applied, result)
+        }
+        assertEquals("a123-b123", allText(doc))
+        view.undo()
+        assertEquals("a-b", allText(doc))
+        view.redo()
+        assertEquals("a123-b123", allText(doc))
+        for (step in 0L..<2L) {
+            val edits = Array<CodeEdit>(2L) { i ->
+                val end = view.selections.values[i].cursor.byteOffset
+                edit(end - 1L, end, "")
+            }
+            view
+                .executeEdits(
+                    doc.version,
+                    edits,
+                    Some({ m -> caretsAfter(m, 2L) }),
+                    CodeEditKind.Backspace
+                )
+        }
+        assertEquals("a1-b1", allText(doc))
+        view.undo()
+        assertEquals("a123-b123", allText(doc))
+        view.setSelections([CodeSelection.caret(0L)])
+        for (step in 0L..<2L) {
+            view.executeEdits(doc.version, [edit(0L, 1L, "")], None, CodeEditKind.DeleteForward)
+        }
+        assertEquals("23-b123", allText(doc))
+        view.undo()
+        assertEquals("a123-b123", allText(doc))
+    }
+}

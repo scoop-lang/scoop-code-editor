@@ -1,0 +1,105 @@
+package scoop.ui.editor
+
+internal fun CodeDocument.transact(
+    owner: CodeEditorState?,
+    expected: Long,
+    edits: List<CodeEdit>,
+    selectAfter: ((CodeEditMap) -> CodeSelections)?,
+    kind: CodeEditKind
+): CodeEditResult {
+    if (owner?.closed ?: false) return CodeEditResult.Invalid
+    if (owner?.readOnly ?: false) return CodeEditResult.ReadOnly
+    if (busy) return CodeEditResult.Busy
+    if (version != expected) return CodeEditResult.Stale
+    busy = true
+    try {
+        val plan = prepareEdits(this, edits) ?: return CodeEditResult.Invalid
+        val before = owner?.selections
+        var after: CodeSelections? = None
+        when (selectAfter) {
+            case Some(val compute) -> {
+                val selected = try {
+                    compute(plan.mapping)
+                } catch (error: Exception) {
+                    return CodeEditResult.Invalid
+                }
+                val checked = normalizedSelections(plan.root, selected) ?:
+                    return CodeEditResult.Invalid
+                after = Some(checked)
+            }
+
+            case None ->
+                when (before) {
+                    case Some(val selection) ->
+                        after = normalizedSelections(
+                            plan.root,
+                            plan.mapping.mapSelections(selection)
+                        )
+                    case None -> {}
+                }
+        }
+        if (plan.mapping.changes.size == 0L) {
+            when (owner) {
+                case Some(val state) ->
+                    if (state.install(after!!)) {
+                        history.boundary = true;
+                        state.selectionEvents.emit(state.selections)
+                    };
+                case None -> {}
+            }
+            return CodeEditResult.Unchanged
+        }
+        history.record(HistoryItem(plan.mapping.changes, owner?.identity, before, after, kind))
+        commitPlan(plan, kind, owner, after)
+        return CodeEditResult.Applied
+    } finally {
+        busy = false
+    }
+}
+
+internal fun CodeDocument.replay(state: CodeEditorState, redo: Boolean): CodeEditResult {
+    if (state.closed) return CodeEditResult.Invalid
+    if (state.readOnly) return CodeEditResult.ReadOnly
+    if (busy) return CodeEditResult.Busy
+    val from = if (redo) history.redo else history.undo
+    val to = if (redo) history.undo else history.redo
+    if (from.size == 0L) return CodeEditResult.Unchanged
+    busy = true
+    try {
+        val entry = from[from.size - 1L]
+        val plan = historyPlan(root, if (redo) entry.changes else inverseChanges(entry.changes))
+        val restore = if (redo) entry.after else entry.before
+        from.removeAt(from.size - 1L)
+        to.add(entry)
+        history.boundary = true
+        commitPlan(plan, if (redo) CodeEditKind.Redo else CodeEditKind.Undo, Some(state), restore)
+        return CodeEditResult.Applied
+    } finally {
+        busy = false
+    }
+}
+
+private fun CodeDocument.commitPlan(
+    plan: EditPlan,
+    kind: CodeEditKind,
+    owner: CodeEditorState?,
+    explicit: CodeSelections?
+) {
+    val oldVersion = version
+    val changed = ArrayList<CodeEditorState>()
+    publishRoot(plan.root)
+    for (view in views) {
+        val matching = when (owner) {
+            case Some(val active) -> active === view;
+            case None -> false
+        }
+        val requested = if (matching) explicit else None
+        val next = requested ?:
+            normalizedSelections(plan.root, plan.mapping.mapSelections(view.selections))!!
+        if (view.install(next)) changed.add(view)
+    }
+    events.emit(CodeDocumentChange(oldVersion, version, plan.mapping, kind))
+    for (view in changed) {
+        if (!view.closed) view.selectionEvents.emit(view.selections)
+    }
+}
