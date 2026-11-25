@@ -1,0 +1,249 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.platform.env.environmentVariable
+import scoop.platform.time.*
+import scoop.test.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Extern(name = "fflush")
+private fun flushBenchmarkOutput(stream: Ptr<Unit>?): Int
+
+@Test
+private class EditorPerformanceTests {
+    @Ignore("Run validation/appkit.sh benchmark on macOS")
+    @Test(useProcess = true)
+    fun measureNativeEditorWorkload() {
+        val shape = environmentVariable("SCOOP_EDITOR_BENCH_SHAPE")!!.decodeUtf8()
+        assertTrue(shape == "lines" || shape == "line")
+        val sample = StringBuilder(300000L)
+        for (i in 0L..<100000L) {
+            if (i != 0L) sample.append(if (shape == "lines") "\n" else " ")
+            sample.append(if (i % 1000L == 999L) "XY" else "ab")
+        }
+        val source = sample.toString()
+        withEditorProbe("scoop_editor_appkit_measure") { native ->
+            val run = EditorMeasurements(shape, native)
+            val begin = MonotonicTimeSource.now()
+            val doc = CodeDocument(source)
+            run.report("open-model", begin, doc.byteLength)
+            assertEquals(if (shape == "lines") 100000L else 1L, doc.lineCount)
+            val read = MonotonicTimeSource.now()
+            val full = doc.read(Utf8Range(0L, doc.byteLength))
+            run.report("full-value-materialize", read, full.byteLength)
+            assertEquals(source, full)
+            val editor = CodeEditorState(doc)
+            val window = PerformanceWindow(run, editor)
+            try {
+                UiHost(
+                    onRootError = { _, e -> throw e },
+                    handler = { h, a, e -> window.event(h, a, e) }
+                )
+                    .use { host -> Application().run(host) }
+                assertTrue(window.finished)
+            } finally {
+                editor.close()
+            }
+        }
+    }
+}
+
+private class EditorMeasurements(
+    val shape: String,
+    val native: FunPtr<(Ptr<Unit>?, Int) -> Int>
+) {
+    fun report(operation: String, begin: MonotonicInstant, bytes: Long = 0L) {
+        val elapsed = MonotonicTimeSource.now() - begin
+        val us = elapsed.floorSeconds * 1000000L + elapsed.nanosecondsOfSecond.toLong() / 1000L
+        @Unsafe {
+            val kib = native(None, 0)
+            assertTrue(kib > 0)
+            println(f"BENCH ${shape} ${operation} us=${us} peak_kib=${kib} bytes=${bytes}")
+            flushBenchmarkOutput(None)
+        }
+    }
+}
+
+private class PerformanceWindow(val run: EditorMeasurements, val editor: CodeEditorState) {
+    private val doc = editor.document
+    private var window: Window? = None
+    private var stamp = MonotonicTimeSource.now()
+    private val deadline = stamp + Duration.seconds(300L)
+    private var nextFocusAttempt = MonotonicTimeSource.now()
+    private var stage = 0
+    private var posted = false
+    private var find: CodeFind? = None
+    var finished = false
+
+    private fun native(step: Int): Int {
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                return when (lease.handle) {
+                    case AppKit(_, val v) -> run.native(Some(v), step)
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Scoop editor measurements";
+                            size = LogicalSize(640.0, 350.0);
+                            level = WindowLevel.AlwaysOnTop
+                        }
+                    )
+                window = Some(w)
+                stamp = MonotonicTimeSource.now()
+                host.attach(w, { scope -> PerformanceRoot(editor, scope) })
+                w.requestFocus()
+                app
+                    .setControlFlow(
+                        ControlFlow.WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(5L))
+                    )
+            }
+
+            case NewEvents(StartCause.Deadline) -> {
+                val now = MonotonicTimeSource.now()
+                if (stage <= 1 && now >= nextFocusAttempt && !editor.hasFocus) {
+                    window?.requestFocus()
+                    if (stage == 1) editor.requestFocus()
+                    nextFocusAttempt = now + Duration.milliseconds(500L)
+                }
+                if (MonotonicTimeSource.now() >= deadline)
+                    fail(Some(f"benchmark expired at stage ${stage}"))
+                app
+                    .setControlFlow(
+                        ControlFlow.WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(5L))
+                    )
+            }
+
+            case AboutToWait -> {
+                if (posted || finished) return
+                val ink = editor.mounted ?: return
+                val frame = ink.currentFrame() ?: return
+                if (stage ==
+                    1 &&
+                    (
+                        ink.connection ==
+                            None ||
+                            !editor.hasFocus ||
+                            ink.area.visibleCaretBounds ==
+                            None
+                    )
+                )
+                    return
+                if (stage == 2 && doc.version != 1L) return
+                if (stage ==
+                    3 &&
+                    (!ink.input.composing || frame.inputRevision != ink.input.state.revision)
+                )
+                    return
+                if (stage == 4 && (ink.input.composing || doc.version != 2L)) return
+                if (stage == 5 && frame.origin.x <= 0.0 && frame.origin.y <= 0.0) return
+                if (stage == 6 && doc.version != 3L || stage == 7 && doc.version != 4L) return
+                posted = true
+                app
+                    .proxy()
+                    .post { active ->
+                        posted = false;
+                        advance(active)
+                    }
+            }
+
+            else -> {}
+        }
+    }
+
+    private fun advance(app: ActiveApplication) {
+        val ink = editor.mounted ?: return
+        val current = ink.currentFrame() ?: return
+        if (current.document.version != doc.version) return
+        when (stage) {
+            case 0 -> {
+                run.report("first-frame", stamp)
+                assertTrue(editor.requestFocus())
+            }
+
+            case 1 -> {
+                val actual = ink.input.state.surroundingText.byteLength
+                assertEquals(if (run.shape == "lines") 2L else doc.byteLength, actual)
+                run.report("ime-context", MonotonicTimeSource.now(), actual)
+                stamp = MonotonicTimeSource.now()
+                assertEquals(0, native(4))
+            }
+
+            case 2 -> {
+                run.report("type-to-frame", stamp)
+                stamp = MonotonicTimeSource.now()
+                assertEquals(0, native(1))
+            }
+
+            case 3 -> {
+                assertEquals(0, native(2))
+            }
+
+            case 4 -> {
+                run.report("chinese-preedit-commit-to-frame", stamp)
+                assertEquals("q中", doc.read(Utf8Range(0L, 4L)))
+                stamp = MonotonicTimeSource.now()
+                editor
+                    .scroll
+                    .scrollTo(
+                        if (run.shape == "lines") Point(0.0, 800000.0) else Point(800000.0, 0.0)
+                    )
+            }
+
+            case 5 -> {
+                run.report("scroll-to-frame", stamp)
+                val search = CodeFind(editor, "XY")
+                find = Some(search)
+                assertEquals(100L, search.matches.size)
+                search.replacement = "ZZ"
+                stamp = MonotonicTimeSource.now()
+                assertEquals(CodeEditResult.Applied, search.replaceAll())
+            }
+
+            case 6 -> {
+                run.report("replace-100-to-frame", stamp)
+                assertEquals(0L, find!!.matches.size)
+                stamp = MonotonicTimeSource.now()
+                assertEquals(CodeEditResult.Applied, editor.undo())
+            }
+
+            case 7 -> {
+                run.report("undo-100-to-frame", stamp)
+                assertEquals(100L, find!!.matches.size)
+                val read = MonotonicTimeSource.now()
+                val bytes = native(3).toLong()
+                run.report("appkit-ax-value-read", read, bytes)
+                assertEquals(doc.byteLength, bytes)
+                val select = MonotonicTimeSource.now()
+                editor.selectAll()
+                val full = ink.input.state.surroundingText.byteLength
+                run.report("ime-select-all-context", select, full)
+                assertEquals(doc.byteLength, full)
+                find!!.close()
+                finished = true
+                app.requestExit()
+            }
+
+            else -> {}
+        }
+        stage += 1
+    }
+}
+
+private class PerformanceRoot(val editor: CodeEditorState, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

@@ -6,6 +6,7 @@ import scoop.platform.time.MonotonicTimeSource
 import scoop.test.*
 import scoop.time.Duration
 import scoop.ui.*
+import scoop.ui.component.*
 import scoop.window.*
 import scoop.window.native.*
 
@@ -13,50 +14,60 @@ import scoop.window.native.*
 private fun loadEditorProbe(path: Ptr<Int8>, mode: Int): Ptr<Unit>?
 
 @Extern(name = "dlsym")
-private fun editorProbeSymbol(image: Ptr<Unit>, name: Ptr<Int8>): FunPtr<(Ptr<Unit>, Int) -> Int>?
+private fun editorProbeSymbol(image: Ptr<Unit>, name: Ptr<Int8>): FunPtr<(Ptr<Unit>?, Int) -> Int>?
 
 @Extern(name = "dlclose")
 private fun closeEditorProbe(image: Ptr<Unit>): Int
 
-@Test
-private class AppKitProtocolTests {
-    @Test(useProcess = true)
-    fun nativeClientSeesLocalTextWhileAccessibilityReadsFullDocument() {
-        val path = environmentVariable("SCOOP_EDITOR_APPKIT_PROBE") ?: return
-        @Unsafe {
-            val image = path
-                .decodeUtf8()
-                .withCString { p ->
+internal fun withEditorProbe(symbol: String, body: (FunPtr<(Ptr<Unit>?, Int) -> Int>) -> Unit) {
+    val path = environmentVariable("SCOOP_EDITOR_APPKIT_PROBE") ?:
+        throw IllegalStateException(
+            Some("Set SCOOP_EDITOR_APPKIT_PROBE using validation/appkit.sh")
+        )
+    @Unsafe {
+        val image = path
+            .decodeUtf8()
+            .withCString { p ->
+                @Unsafe {
+                    return@withCString loadEditorProbe(p, 2)
+                }
+            }!!
+        try {
+            val function = symbol
+                .withCString { name ->
                     @Unsafe {
-                        return@withCString loadEditorProbe(p, 2)
+                        return@withCString editorProbeSymbol(image, name)
                     }
                 }!!
-            try {
-                val function = "scoop_editor_appkit_probe"
-                    .withCString { name ->
-                        @Unsafe {
-                            return@withCString editorProbeSymbol(image, name)
-                        }
-                    }!!
-                val probe = AppKitProtocolProbe(function)
-                UiHost(
-                    onRootError = { _, e -> throw e },
-                    handler = { h, a, e -> probe.event(h, a, e) }
-                )
-                    .use { host -> Application().run(host) }
-                assertTrue(probe.finished)
-            } finally {
-                closeEditorProbe(image)
-            }
+            body(function)
+        } finally {
+            closeEditorProbe(image)
         }
     }
 }
 
-private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
+@Test
+private class AppKitProtocolTests {
+    @Ignore("Run validation/appkit.sh on macOS")
+    @Test(useProcess = true)
+    fun nativeClientSeesLocalTextWhileAccessibilityReadsFullDocument() {
+        withEditorProbe("scoop_editor_appkit_probe") { function ->
+            val probe = AppKitProtocolProbe(function)
+            UiHost(onRootError = { _, e -> throw e }, handler = { h, a, e -> probe.event(h, a, e) })
+                .use { host -> Application().run(host) }
+            assertTrue(probe.finished)
+        }
+    }
+}
+
+private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>?, Int) -> Int>) {
     val editor = CodeEditorState(CodeDocument("一\r\nA🙂B\r\n末"))
+    val peer = CodeEditorState(editor.document)
+    private var firstRevision = 0L
     var finished = false
     private var window: Window? = None
-    private val deadline = MonotonicTimeSource.now() + Duration.seconds(15L)
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(30L)
+    private var nextFocusAttempt = MonotonicTimeSource.now()
     private var stage = 0
     private var queued = false
 
@@ -70,12 +81,11 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
                         windowAttributes {
                             title = "Scoop AppKit text protocol";
                             size = LogicalSize(420.0, 180.0);
-                            visible = false
+                            level = WindowLevel.AlwaysOnTop
                         }
                     )
                 window = Some(w)
-                host.attach(w, { mount -> AppKitEditorRoot(editor, mount) })
-                w.setVisible(true)
+                host.attach(w, { mount -> AppKitEditorRoot(editor, peer, mount) })
                 w.requestFocus()
                 app
                     .setControlFlow(
@@ -88,11 +98,20 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
                 val host = editor.mounted ?: return
                 val frame = host.currentFrame() ?: return
                 if (queued || finished || frame.document.version != editor.document.version) return
-                if (stage > 0 && (host.connection == None || !host.area.isFocusActive)) return
+                if (stage >
+                    0 &&
+                    (host.connection == None || host.retiring || !host.area.isFocusActive)
+                )
+                    return
                 if (stage == 1 && host.area.visibleCaretBounds == None) return
                 if (stage == 2 && !host.input.composing) return
                 if (stage == 3 && (host.input.composing || editor.document.version != 1L)) return
                 if (stage == 4 && editor.selections.primary.range != Utf8Range(0L, 5L)) return
+                if (stage == 5 && (host.input.start != 0L || editor.document.version != 2L)) return
+                if (stage == 6 && host.input.start != 3L) return
+                if (stage == 7 && !host.input.composing) return
+                if (stage == 8 && (host.input.composing || editor.document.version != 3L)) return
+                if (stage == 9 && editor.document.version != 4L) return
                 queued = true
                 app
                     .proxy()
@@ -103,12 +122,22 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
             }
 
             case NewEvents(StartCause.Deadline) -> {
+                val now = MonotonicTimeSource.now()
+                if (stage <= 1 && now >= nextFocusAttempt && !editor.hasFocus) {
+                    window?.requestFocus()
+                    if (stage == 1) editor.requestFocus()
+                    nextFocusAttempt = now + Duration.milliseconds(500L)
+                }
+                if (stage == 0) window?.requestRedraw()
                 if (!finished && MonotonicTimeSource.now() >= deadline) {
                     val ink = editor.mounted
                     val accepted = ink?.accepted ?: None
                     val rows = accepted?.rows?.size ?: -1L
                     val mounted = ink?.ended == Some(false)
                     val focused = editor.hasFocus
+                    val key = window?.isFocused ?: false
+                    val claimed = ink?.area?.hasFocus ?: false
+                    val peerFocus = peer.hasFocus
                     println(
                         f"AppKit timeout ${stage} mounted=${mounted} rows=${rows} focused=${
                             focused
@@ -118,7 +147,7 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
                         Some(
                             f"AppKit protocol stopped at stage ${stage}, mounted ${mounted}, rows ${
                                 rows
-                            }, focused ${focused}"
+                            }, active ${focused}, key ${key}, logical ${claimed}, peer ${peerFocus}"
                         )
                     )
                 }
@@ -142,7 +171,7 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
                 try {
                     when (lease.handle) {
                         case AppKit(_, val view) -> {
-                            val result = run(view, stage - 1)
+                            val result = run(Some(view), stage - 1)
                             assertEquals(
                                 0,
                                 result,
@@ -154,17 +183,76 @@ private class AppKitProtocolProbe(val run: FunPtr<(Ptr<Unit>, Int) -> Int>) {
                     lease.close()
                 }
             }
-            if (stage == 2) assertEquals(0L, editor.document.version)
-            if (stage == 4) {
-                finished = true;
-                app.requestExit()
+            val doc = editor.document
+            when (stage) {
+                case 2 -> assertEquals(0L, doc.version)
+
+                case 4 -> {
+                    assertEquals(
+                        CodeEditResult.Applied,
+                        peer
+                            .executeEdits(
+                                doc.version,
+                                [CodeEdit(Utf8Range(0L, doc.byteLength), "aa\naa\nend")]
+                            )
+                    )
+                    editor.setSelections([CodeSelection.caret(1L)])
+                }
+
+                case 5 -> {
+                    firstRevision = editor.mounted!!.input.state.revision
+                    editor.setSelections([CodeSelection.caret(4L)])
+                }
+
+                case 6 -> {
+                    val input = editor.mounted!!.input
+                    assertTrue(input.state.revision > firstRevision)
+                    val stale = TextInputBatch(
+                        Some(firstRevision),
+                        [TextInputOperation.Commit("late", TextReplacement.CurrentSelection)]
+                    )
+                    assertTrue(input.accept(stale)?.acknowledgement == None)
+                    assertEquals(2L, doc.version)
+                }
+
+                case 7 -> {
+                    assertEquals("aa", peer.document.read(doc.lineRange(1L)))
+                    assertEquals(
+                        CodeEditResult.Applied,
+                        peer
+                            .executeEdits(
+                                doc.version,
+                                [CodeEdit(Utf8Range(doc.byteLength, doc.byteLength), "!")]
+                            )
+                    )
+                }
+
+                case 9 -> {
+                    assertEquals("aa\naXa\nend!", doc.read(Utf8Range(0L, doc.byteLength)))
+                    finished = true
+                    app.requestExit()
+                }
+
+                else -> {}
             }
         }
         stage += 1
     }
 }
 
-private class AppKitEditorRoot(val editor: CodeEditorState, scope: ComponentScope) :
+private class AppKitEditorRoot(
+    val editor: CodeEditorState,
+    val peer: CodeEditorState,
+    scope: ComponentScope
+) :
     Component(scope) {
-    public override fun render(): View = codeEditor(editor)
+    public override fun render(): View {
+        val left = codeEditor(editor)
+        val right = codeEditor(peer)
+        return row {
+            alignment = CrossAlignment.Stretch;
+            item(left) { grow = 1.0 };
+            item(right) { grow = 1.0 }
+        }
+    }
 }

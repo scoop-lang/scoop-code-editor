@@ -33,6 +33,8 @@ private class NativeWindowProbe {
     var finished = false
     private var stage = 0
     private var queued = false
+    private var native: Window? = None
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(30L)
 
     fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
         when (event) {
@@ -44,15 +46,16 @@ private class NativeWindowProbe {
                         windowAttributes {
                             title = "Scoop code editor validation";
                             size = LogicalSize(640.0, 260.0);
-                            visible = false
+                            level = WindowLevel.AlwaysOnTop
                         }
                     )
+                native = Some(window)
                 host.attach(window, { mount -> ProbeEditors(this, mount) })
-                window.setVisible(true)
                 window.requestFocus()
                 app
                     .setControlFlow(
-                        ControlFlow.WaitUntil(MonotonicTimeSource.now() + Duration.seconds(12L))
+                        ControlFlow
+                            .WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(50L))
                     )
             }
 
@@ -80,6 +83,15 @@ private class NativeWindowProbe {
                 }
 
             case NewEvents(StartCause.Deadline) -> {
+                if (MonotonicTimeSource.now() < deadline) {
+                    if (stage == 0) native?.requestRedraw()
+                    app
+                        .setControlFlow(
+                            ControlFlow
+                                .WaitUntil(MonotonicTimeSource.now() + Duration.milliseconds(50L))
+                        )
+                    return
+                }
                 if (!finished) {
                     val l = left.mounted
                     val r = right.mounted

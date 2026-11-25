@@ -100,13 +100,11 @@ private class WidgetWindowProbe {
                         windowAttributes {
                             title = "Code editor widget geometry";
                             size = LogicalSize(340.0, 230.0);
-                            visible = false
+                            level = WindowLevel.AlwaysOnTop
                         }
                     )
                 window = Some(w)
                 host.attach(w, { scope -> WidgetWindowRoot(editor, scope) })
-                w.setWindowLevel(WindowLevel.AlwaysOnTop)
-                w.setVisible(true)
                 w.requestFocus()
                 app
                     .setControlFlow(
