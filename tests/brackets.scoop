@@ -1,0 +1,65 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.*
+import scoop.graphics.Color
+
+@Test
+private class BracketAndHighlightTests {
+    @Test
+    fun navigatesMatchingDelimitersAcrossFoldsAndSkipsNestedCommentsAndStringContents() {
+        val doc = CodeDocument(
+            "call({\n  \"}\" /* ], /* } */ */ (x)\n})",
+            Some(scoopCodeLanguage())
+        )
+        val editor = CodeEditorState(doc)
+        val pair = editor.matchingBrackets(5L)!!
+        assertEquals("{", doc.read(pair.current))
+        assertEquals(Utf8Range(doc.byteLength - 2L, doc.byteLength - 1L), pair.partner)
+        val saved = doc.version
+        editor.folding.addManual(CodeFoldRange(0L, 2L))
+        editor.setSelections([CodeSelection.caret(5L)])
+        assertTrue(editor.runAction("bracket.jump"))
+        assertEquals(doc.byteLength - 1L, editor.selections.primary.cursor.byteOffset)
+        assertEquals(0L, editor.folding.collapsedRanges().size)
+        editor.setSelections([CodeSelection.caret(doc.byteLength)])
+        assertTrue(editor.runAction("bracket.select"))
+        assertFalse(editor.selections.primary.forward)
+        assertEquals(doc.read(Utf8Range(4L, doc.byteLength)), editor.selectedText())
+        val inString = findLiteral(doc.snapshot(), "\"}\"")[0L].start + 1L
+        assertEquals(None, editor.matchingBrackets(inString))
+        assertEquals(saved, doc.version)
+        assertFalse(editor.canUndo)
+    }
+    @Test
+    fun honorsMultiCharacterLanguagePairsAndVisibleOccurrenceRanges() {
+        val rules = CodeLanguage(brackets = [CodePair("<<", ">>")])
+        val doc = CodeDocument("a << a <<中>> a >>\na a", Some(rules))
+        val e = CodeEditorState(doc)
+        val m = e.matchingBrackets(3L)!!
+        assertEquals(">>", doc.read(m.partner))
+        assertEquals(doc.lineRange(0L).end, m.partner.end)
+        e.setSelections([CodeSelection.offsets(1L, 0L)])
+        val matches = SelectionMatches(e)
+        assertEquals(3L, matches.at(0L, doc.read(doc.lineRange(0L))).size)
+        assertEquals(2L, matches.at(1L, doc.read(doc.lineRange(1L))).size)
+        val group = e.decorations()
+        group
+            .set(
+                [
+                    CodeDecoration(
+                        doc.lineRange(0L),
+                        CodeDecorationStyle(wholeLine = Some(Color.Black))
+                    )
+                ]
+            )
+        assertEquals(0L, doc.version)
+        e.options = CodeEditorOptions(highlightSelectionMatches = false)
+        assertEquals(0L, matches.at(1L, "a a").size)
+        doc.language = Some(CodeLanguage(brackets = [CodePair("(", ")")]))
+        assertEquals(None, e.matchingBrackets(3L))
+        val plain = CodeEditorState(CodeDocument("([)]"))
+        assertEquals(None, plain.matchingBrackets(0L))
+        group.close()
+    }
+}

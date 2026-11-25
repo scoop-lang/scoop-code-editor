@@ -12,7 +12,11 @@ public class CodeEditorTheme public constructor(
     public val gutter: Color,
     public val caret: Color,
     public val selection: Color,
-    tokenStyles: List<CodeTokenStyle>
+    tokenStyles: List<CodeTokenStyle>,
+    public val currentLine: Color = gutter.withAlpha(0.10),
+    public val matchBackground: Color = selection.withAlpha(0.43),
+    public val bracketBackground: Color = gutter.withAlpha(0.20),
+    public val bracketEdge: Color = caret
 ) {
     private val styles = HashMap<String, SpanStyle>()
     init {

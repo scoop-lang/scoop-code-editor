@@ -1,0 +1,204 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.TextPosition
+import scoop.surface.*
+import scoop.text.startsWith
+import scoop.window.*
+
+public struct CodeBracketMatch(val current: Utf8Range, val partner: Utf8Range)
+
+internal val standardBrackets: Array<CodePair> = [
+    CodePair("(", ")"),
+    CodePair("[", "]"),
+    CodePair("{", "}")
+]
+
+private struct Delimiter(val index: Long, val opening: Boolean, val bytes: Array<Byte>)
+
+private struct BracketAt(val kind: Long, val opening: Boolean, val range: Utf8Range)
+
+internal class BracketMatcher(private val doc: CodeDocument) {
+    private var language: CodeLanguage? = None
+    private var configured = false
+    private var delimiters: Array<Delimiter> = []
+    private var version = -1L
+    private var position = -1L
+    private var cached: CodeBracketMatch? = None
+
+    private fun configure() {
+        val rules = doc.language
+        val same = when (language) {
+            case Some(val old) ->
+                when (rules) {
+                    case Some(val now) -> old === now;
+                    case None -> false
+                };
+            case None -> rules?.wordPattern == None
+        }
+        if (configured && same) return
+        configured = true
+        language = rules
+        position = -1L
+        val pairs = rules?.brackets ?: standardBrackets
+        val entries = ArrayList<Delimiter>()
+        for (i in 0L..<pairs.size) {
+            if (pairs[i].open == pairs[i].close) continue
+            entries.add(Delimiter(i, true, pairs[i].open.toByteArray()))
+            entries.add(Delimiter(i, false, pairs[i].close.toByteArray()))
+        }
+        delimiters = entries.toArray()
+    }
+    private fun potential(at: Long): Boolean {
+        if (at < doc.byteLength) {
+            val next = treeByte(doc.root, at)
+            for (d in delimiters)
+                if (d.bytes[0L] == next) return true
+        }
+        if (at > 0L) {
+            val last = treeByte(doc.root, at - 1L)
+            for (d in delimiters)
+                if (d.bytes[d.bytes.size - 1L] == last) return true
+        }
+        return false
+    }
+    private fun lineMarks(line: Long): Array<BracketAt> {
+        val r = doc.lineRange(line)
+        val data = doc.read(r).toByteArray()
+        val tokens = doc.lineTokens(line)
+        val found = ArrayList<BracketAt>()
+        var i = 0L
+        var token = 0L
+        while (i < data.size) {
+            while (token < tokens.size && tokens[token].range.end <= i)
+                token += 1L
+            if (token < tokens.size && tokens[token].range.start <= i) {
+                val t = tokens[token]
+                if (t.category ==
+                    "string" ||
+                    t.category ==
+                    "comment" ||
+                    t.category.startsWith("string.") ||
+                    t.category.startsWith("comment.")
+                ) {
+                    i = t.range.end
+                    continue
+                }
+            }
+            var length = 0L
+            var choice = 0L
+            for (j in 0L..<delimiters.size) {
+                val bytes = delimiters[j].bytes
+                if (bytes[0L] != data[i] || bytes.size <= length || i + bytes.size > data.size)
+                    continue
+                var n = 1L
+                while (n < bytes.size && data[i + n] == bytes[n])
+                    n += 1L
+                if (n == bytes.size) {
+                    choice = j;
+                    length = n
+                }
+            }
+            if (length == 0L) {
+                i += 1L;
+                continue
+            }
+            val mark = delimiters[choice]
+            found
+                .add(
+                    BracketAt(
+                        mark.index,
+                        mark.opening,
+                        Utf8Range(r.start + i, r.start + i + length)
+                    )
+                )
+            i += length
+        }
+        return found.toArray()
+    }
+    internal fun at(offset: Long): CodeBracketMatch? {
+        if (!scalarBoundary(doc.root, offset)) return None
+        configure()
+        if (position == offset && version == doc.version) return cached
+        position = offset
+        version = doc.version
+        cached = if (potential(offset)) find(offset) else None
+        return cached
+    }
+    private fun find(offset: Long): CodeBracketMatch? {
+        var line = doc.positionAt(offset).line
+        var marks = lineMarks(line)
+        var current: BracketAt? = None
+        for (m in marks) {
+            if (m.range.start <= offset && offset < m.range.end) {
+                current = Some(m);
+                break
+            }
+            if (m.range.end == offset) current = Some(m)
+        }
+        val head = current ?: return None
+        val stack = ArrayList<Long>()
+        stack.add(head.kind)
+        val forward = head.opening
+        while (true) {
+            var i = if (forward) 0L else marks.size - 1L
+            while (i >= 0L && i < marks.size) {
+                val m = marks[i]
+                i += if (forward) 1L else -1L
+                if (forward &&
+                    m.range.start <
+                    head.range.end ||
+                    !forward &&
+                    m.range.end >
+                    head.range.start
+                )
+                    continue
+                if (m.opening == forward)
+                    stack.add(m.kind)
+                else {
+                    if (stack[stack.size - 1L] != m.kind) return None
+                    stack.removeAt(stack.size - 1L)
+                    if (stack.size == 0L) return Some(CodeBracketMatch(head.range, m.range))
+                }
+            }
+            line += if (forward) 1L else -1L
+            if (line < 0L || line >= doc.lineCount) return None
+            marks = lineMarks(line)
+        }
+    }
+}
+
+public fun CodeEditorState.matchingBrackets(
+    position: Long = selections.primary.cursor.byteOffset
+): CodeBracketMatch? = bracketMatcher.at(position)
+
+private fun CodeEditorState.followBracket(select: Boolean) {
+    val old = selections
+    val result = Array<CodeSelection>(old.values.size) { i ->
+        val entry = old.values[i]
+        when (val match = matchingBrackets(entry.cursor.byteOffset)) {
+            case Some(val m) -> {
+                val forward = m.current.start < m.partner.start
+                val dest = if (forward) m.partner.end else m.partner.start
+                if (select)
+                    CodeSelection.offsets(if (forward) m.current.start else m.current.end, dest)
+                else
+                    CodeSelection.caret(dest)
+            }
+
+            case None -> entry
+        }
+    }
+    setSelections(result, old.primaryIndex)
+    revealRange(
+        Utf8Range(selections.primary.cursor.byteOffset, selections.primary.cursor.byteOffset)
+    )
+}
+
+internal fun CodeEditorState.installBracketActions() {
+    addAction(
+        "bracket.jump",
+        "Go to matching bracket",
+        characterShortcut("\\", ShortcutModifiers(primary = true, shift = true))
+    ) { e -> e.followBracket(false) }
+    addAction("bracket.select", "Select to matching bracket") { e -> e.followBracket(true) }
+}

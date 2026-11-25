@@ -1,0 +1,105 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.window.Utf8Range
+
+internal class SelectionMatches(private val editor: CodeEditorState) {
+    private var version = -1L
+    private var selected = Utf8Range(0L, 0L)
+    private var needle = ""
+    private val cached = HashMap<Long, Array<Utf8Range>>()
+    internal fun at(line: Long, source: String): Array<Utf8Range> {
+        if (!editor.options.highlightSelectionMatches) return []
+        val doc = editor.document
+        val r = editor.selections.primary.range
+        if (r.start == r.end) return []
+        if (r != selected || version != doc.version) {
+            version = doc.version
+            selected = r
+            cached.clear()
+            needle = if (doc.positionAt(r.start).line == doc.positionAt(r.end).line)
+                doc.read(r)
+            else
+                ""
+        }
+        if (needle.byteLength == 0L) return []
+        val old = cached[line]
+        if (old?.size != None) return old!!
+        val result = literalOnLine(source, needle)
+        cached.put(line, result)
+        return result
+    }
+    internal fun retainVisible(rows: Array<ScreenRow>) {
+        if (cached.size <= rows.size) return
+        val kept = HashSet<Long>()
+        for (row in rows)
+            kept.add(row.line)
+        val remove = ArrayList<Long>()
+        for (item in cached)
+            if (!kept.contains(item.key)) remove.add(item.key)
+        for (key in remove)
+            cached.remove(key)
+    }
+}
+
+internal fun paintCurrentLine(canvas: Canvas, frame: EditorFrame, row: ScreenRow, ink: EditorInk) {
+    val opt = frame.options
+    if (opt.highlightCurrentLine) {
+        val cursor = ink.activePosition(frame)
+        if (cursor.byteOffset >= row.range.start && cursor.byteOffset <= row.range.end) {
+            val caret = row.ink.layout.caret(row.display(cursor))
+            when (caret) {
+                case Some(val rect) ->
+                    canvas
+                        .drawRect(
+                            Rect(
+                                frame.gutter,
+                                row.top + rect.y - frame.origin.y,
+                                frame.size.width - frame.gutter,
+                                rect.height
+                            ),
+                            Paint(color = opt.theme.currentLine)
+                        );
+                case None -> {}
+            }
+        }
+    }
+}
+
+internal fun paintLineHighlights(
+    canvas: Canvas,
+    frame: EditorFrame,
+    row: ScreenRow,
+    ink: EditorInk,
+    brackets: CodeBracketMatch?
+) {
+    val opt = frame.options
+    val editor = ink.editor
+    if (ink.input.composing) return
+    for (match in ink.selectionMatches.at(row.line, row.ink.source)) {
+        val range = Utf8Range(row.range.start + match.start, row.range.start + match.end)
+        if (range != editor.selections.primary.range)
+            paintRange(canvas, frame, row, range, opt.theme.matchBackground, false)
+    }
+    when (brackets) {
+        case Some(val pair) -> {
+            paintRange(canvas, frame, row, pair.current, opt.theme.bracketBackground, false)
+            paintRange(canvas, frame, row, pair.partner, opt.theme.bracketBackground, false)
+        }
+
+        case None -> {}
+    }
+}
+
+internal fun paintsWholeLine(d: CodeDecoration, row: ScreenRow): Boolean = d.range.start <=
+    row.range.end &&
+    (
+        d.range.end >
+            row.range.start ||
+            d.range.start ==
+            d.range.end &&
+            d.range.start ==
+            row.range.start
+    )

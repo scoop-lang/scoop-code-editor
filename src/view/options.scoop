@@ -22,6 +22,9 @@ public class CodeEditorOptions public constructor(
     public val indentSize: Long = tabSize,
     public val multiCursorPaste: CodeMultiCursorPaste = CodeMultiCursorPaste.Spread,
     public val scrollbars: ScrollbarVisibility = ScrollbarVisibility.Auto,
+    public val highlightCurrentLine: Boolean = true,
+    public val highlightSelectionMatches: Boolean = true,
+    public val highlightBrackets: Boolean = true,
     public val foldingControls: Boolean = true
 ) {
     init {

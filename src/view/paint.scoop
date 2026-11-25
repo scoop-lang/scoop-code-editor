@@ -5,7 +5,7 @@ import scoop.graphics.text.*
 import scoop.ui.*
 import scoop.window.Utf8Range
 
-private fun paintRange(
+internal fun paintRange(
     canvas: Canvas,
     frame: EditorFrame,
     row: ScreenRow,
@@ -110,8 +110,29 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                     val canvas = paint.canvas
                     val primary = ink.editor.selections.primaryIndex
                     val selections = ink.editor.selections.values
+                    val brackets = if (opt.highlightBrackets && !ink.input.composing)
+                        ink.editor.matchingBrackets()
+                    else
+                        None
                     for (row in frame.rows) {
                         val decorations = ink.decorationsFor(row.range)
+                        for (d in decorations)
+                            if (paintsWholeLine(d, row))
+                                when (val color = d.style.wholeLine) {
+                                    case Some(val c) ->
+                                        canvas
+                                            .drawRect(
+                                                Rect(
+                                                    frame.gutter,
+                                                    row.top - frame.origin.y,
+                                                    positive(size.width - frame.gutter),
+                                                    row.height
+                                                ),
+                                                Paint(color = c)
+                                            )
+                                    case None -> {}
+                                }
+                        paintCurrentLine(canvas, frame, row, ink)
                         for (d in decorations) {
                             when (d.style.background) {
                                 case Some(val c) ->
@@ -119,6 +140,7 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                                 case None -> {}
                             }
                         }
+                        paintLineHighlights(canvas, frame, row, ink, brackets)
                         for (i in 0L..<selections.size) {
                             val range = selections[i].range
                             if (ink.input.composing && i == primary) {
@@ -158,6 +180,28 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                                     paintRange(canvas, frame, row, d.range, color, true);
                                 case None -> {}
                             }
+                        }
+                        when (brackets) {
+                            case Some(val pair) -> {
+                                paintRange(
+                                    canvas,
+                                    frame,
+                                    row,
+                                    pair.current,
+                                    opt.theme.bracketEdge,
+                                    true
+                                )
+                                paintRange(
+                                    canvas,
+                                    frame,
+                                    row,
+                                    pair.partner,
+                                    opt.theme.bracketEdge,
+                                    true
+                                )
+                            }
+
+                            case None -> {}
                         }
                         when (ink.input.state.markedRange) {
                             case Some(val r) ->

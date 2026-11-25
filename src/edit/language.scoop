@@ -49,7 +49,7 @@ public class CodeLanguage public constructor(
 }
 
 public fun scoopCodeLanguage(): CodeLanguage {
-    val brackets = [CodePair("(", ")"), CodePair("[", "]"), CodePair("{", "}")]
+    val brackets = standardBrackets
     return CodeLanguage(
         lineComment = Some("//"), blockComment = Some(CodePair("/*", "*/")), brackets = brackets,
         autoClosingPairs = [

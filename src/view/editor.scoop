@@ -33,6 +33,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
         if (update == DecorationUpdate.Metrics) metricRevision += 1L
         scope.requestLayout()
     }
+    internal var selectionMatches = SelectionMatches(editor)
     internal var input = EditorInputSession(editor)
     internal val viewport = scope.scrollViewport(editor.scroll)
     internal val area = scope
@@ -225,6 +226,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
             area.scope.enabled = true
             area.textInput = !editor.readOnly
             input = EditorInputSession(editor)
+            selectionMatches = SelectionMatches(editor)
             layoutEngine.anchor = None
             semanticVersion = -1L
             ended = false
@@ -283,6 +285,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                     }
                     if (editor.reveal == pending) editor.reveal = None
                     layoutEngine.anchor = None
+                    selectionMatches.retainVisible(retained.rows)
                     val ranges = retained.visible()
                     if (!equalVisibleRanges(ranges, previousVisible)) {
                         previousVisible = ranges

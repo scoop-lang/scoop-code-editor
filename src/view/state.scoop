@@ -11,6 +11,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     internal var closed = false
     private var current = CodeSelections([CodeSelection.caret(0L)])
     public val selections: CodeSelections get() = current
+    internal val bracketMatcher = BracketMatcher(document)
     public val folding = CodeFolding(this)
     internal val generatedPairs = ArrayList<GeneratedPair>()
     internal val actions = ArrayList<EditorAction>()
@@ -110,6 +111,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         installViewActions()
         installCodeActions()
         installFoldActions()
+        installBracketActions()
         addAction(
             "lens.focus",
             "Focus visible CodeLens",
