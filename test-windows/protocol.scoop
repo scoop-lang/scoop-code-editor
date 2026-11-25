@@ -1,0 +1,64 @@
+package scoop.ui.editor
+
+import scoop.platform.env.environmentVariable
+import scoop.test.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Extern(name = "LoadLibraryW")
+private fun loadEditorTsf(path: Ptr<UInt16>): Ptr<Unit>?
+
+@Extern(name = "GetProcAddress")
+private fun editorTsfExport(image: Ptr<Unit>, name: Ptr<Byte>): Ptr<Unit>?
+
+@Extern(name = "FreeLibrary")
+private fun closeEditorTsf(image: Ptr<Unit>): Int
+
+@Test
+private class WindowsEditorProtocolTests {
+    @Ignore("Run validation/desktop.py with TSF and UI Automation")
+    @Test(useProcess = true)
+    fun tsfCompositionAndUiaValueSelectionAndEditing() {
+        val units = (
+            environmentVariable("SCOOP_EDITOR_TSF_PROBE") ?:
+                throw IllegalStateException(Some("Missing TSF probe path"))
+        )
+            .toUtf16()
+        val name = Array<UInt16>(units.size + 1L) { i ->
+            if (i < units.size) units[i] else 0.toUShort()
+        }
+        @Unsafe {
+            val dll = name
+                .withDataPointer { address, _ ->
+                    @Unsafe {
+                        return@withDataPointer loadEditorTsf(address)
+                    }
+                } ?:
+                throw IllegalStateException(Some("LoadLibraryW failed for TSF probe"))
+            try {
+                val symbol = "editor_tsf_probe"
+                    .withCString { bytes ->
+                        @Unsafe {
+                            return@withCString editorTsfExport(dll, bytes)
+                        }
+                    } ?:
+                    throw IllegalStateException(Some("Missing TSF probe export"))
+                val invoke = symbol.cast<FunPtr<(Ptr<Unit>, Int) -> Int>>().load()
+                runDesktopProtocol { w, step ->
+                    @Unsafe {
+                        val lease = w.acquireNativeWindow()
+                        try {
+                            return@runDesktopProtocol when (lease.handle) {
+                                case Win32(val hwnd, _) -> invoke(hwnd, step)
+                            }
+                        } finally {
+                            lease.close()
+                        }
+                    }
+                }
+            } finally {
+                closeEditorTsf(dll)
+            }
+        }
+    }
+}

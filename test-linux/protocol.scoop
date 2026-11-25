@@ -1,0 +1,12 @@
+package scoop.ui.editor
+
+import scoop.test.*
+
+@Test
+private class LinuxEditorProtocolTests {
+    @Ignore("Run validation/desktop.py with GTK and AT-SPI")
+    @Test(useProcess = true)
+    fun gtkCompositionAndAtspiValueSelectionAndEditing() {
+        runDesktopProtocol { _, _ -> 0 }
+    }
+}

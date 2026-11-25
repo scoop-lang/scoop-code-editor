@@ -7,6 +7,7 @@ import scoop.test.*
 import scoop.text.repeat
 import scoop.time.Duration
 import scoop.ui.*
+import scoop.ui.component.*
 import scoop.window.*
 
 @Test
@@ -48,7 +49,7 @@ private class FontWindow {
                     .createWindow(
                         windowAttributes {
                             title = "Range fonts and native caret";
-                            size = LogicalSize(254.0, 160.0)
+                            size = LogicalSize(760.0, 210.0)
                         }
                     )
                 host.attach(w, { scope -> FontView(editor, scope) })
@@ -63,6 +64,10 @@ private class FontWindow {
                 val frame = ink.currentFrame() ?: return
                 if (queued ||
                     finished ||
+                    stage ==
+                    0 &&
+                    frame.size.width >
+                    270.0 ||
                     stage ==
                     1 &&
                     (!editor.hasFocus || ink.area.visibleCaretBounds == None)
@@ -89,8 +94,14 @@ private class FontWindow {
                                 shared
                                     .set(
                                         [
-                                            CodeDecoration(Utf8Range(1L, 7L), range),
-                                            CodeDecoration(Utf8Range(far + 1L, far + 7L), range)
+                                            CodeDecoration(
+                                                Utf8Range(1L, sample.byteLength - 2L),
+                                                range
+                                            ),
+                                            CodeDecoration(
+                                                Utf8Range(far + 1L, far + sample.byteLength - 2L),
+                                                range
+                                            )
                                         ]
                                     )
                                 val italic = spanStyle {
@@ -112,7 +123,16 @@ private class FontWindow {
 
                             case 1 -> {
                                 assertTrue(caret.x > width * 1.5)
-                                assertTrue(row.height > height && row.ink.layout.lines.size > lines)
+                                assertTrue(
+                                    row.height > height && row.ink.layout.lines.size > lines,
+                                    Some(
+                                        f"range font at width ${frame.size.width}: height ${
+                                            height
+                                        } to ${row.height}, rows ${lines} to ${
+                                            row.ink.layout.lines.size
+                                        }"
+                                    )
+                                )
                                 val p = frame.displayCaret(TextPosition(3L))!!
                                 val at = frame.hit(Point(p.x + 0.1, p.y + p.height / 2.0))!!
                                 assertEquals(3L, at.byteOffset)
@@ -198,5 +218,13 @@ private class FontWindow {
 }
 
 private class FontView(val editor: CodeEditorState, scope: ComponentScope) : Component(scope) {
-    public override fun render(): View = codeEditor(editor)
+    public override fun render(): View {
+        val body = codeEditor(editor)
+        return row {
+            item(body) {
+                basis = FlexBasis.Fixed(254.0);
+                shrink = 0.0
+            }
+        }
+    }
 }

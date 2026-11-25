@@ -6,6 +6,8 @@
 
 ```toml
 [dependencies]
+"scoop:scoop.ui" = "0.1.0"
+"scoop:scoop.ui.component" = "0.1.0"
 "scoop:scoop.ui.editor" = { version = "0.1.0", path = "../scoop-code-editor" }
 ```
 
@@ -37,9 +39,9 @@ class SplitEditor(scope: ComponentScope) : Component(scope) {
 
 ## 本地验证
 
-本机验证使用包含 Scoop 主仓提交 `13a8be70b` 的工具链和 macOS GUI 组件。该工具链提供 `AXTextArea` 多行语义及自绘视口可用的主题滚动条。[原生无障碍接口](https://github.com/scoop-lang/scoop/pull/219) · [视口滚动条](https://github.com/scoop-lang/scoop/pull/222)
+宿主需要安装 Scoop 工具链和当前平台的 GUI 组件。上面的双视图示例使用 Scoop 主仓提交 `8d42bfb47` 验证。该版本包含自绘视口的主题滚动条、多行文本无障碍语义及独立宿主消费编辑器库所需的泛型修复。[原生无障碍接口](https://github.com/scoop-lang/scoop/pull/219) · [视口滚动条](https://github.com/scoop-lang/scoop/pull/222) · [跨 Cone 泛型修复](https://github.com/scoop-lang/scoop/pull/225)
 
-`validation/appkit.sh` 在当前 macOS 桌面会话中以前台应用运行测试，覆盖真实原生输入、拖选、窗口焦点和辅助技术。可按用例或测试容器名称筛选。性能测量为两种文档各启动三个新进程。[本机测量结果](docs/PERFORMANCE.md)
+`validation/appkit.sh` 在当前 macOS 桌面会话中以前台应用运行测试，覆盖真实原生输入、拖选、窗口焦点和辅助技术。可按用例或测试容器名称筛选。性能测量比较十万短行和同字节数的单条长行，分别在普通及开启扩展时各启动三个新进程。[本机测量结果](docs/PERFORMANCE.md)
 
 ```sh
 scoop check . --tests --release
@@ -47,3 +49,12 @@ scoop check . --tests --release
 ./validation/appkit.sh test NativePointerTests ViewportCommandTests
 ./validation/appkit.sh benchmark
 ```
+
+Linux 和 Windows 的原生协议用例需要一个独立客户端。先运行常规测试，再从仓库根目录启动相应客户端。[桌面协议验证入口](validation/desktop.py)
+
+| 平台 | 运行方法 | 覆盖 |
+| --- | --- | --- |
+| Linux | `scoop test . --release` 和 `python3 validation/desktop.py`。协议用例在独立的 D-Bus 与 Xvfb 会话中运行，需要 GTK 4、系统 Python 的 PyGObject 与 AT-SPI 2、Openbox 及 xdotool。常规窗口用例需要可用显示 | GTK 组合输入、提交中文、AT-SPI 全文读取、非 ASCII 选区与辅助编辑 |
+| Windows x64 | 在已登录的桌面运行 `sco test . --release`。在带 MSVC 和 Windows SDK 的 x64 开发者终端运行 `python validation/desktop.py` | TSF 查询当前行和候选窗坐标、组合输入与提交，独立 UI Automation 客户端读取全文、设置选区与改写正文 |
+
+三平台均用包含 CRLF、中文和 emoji 的正文验证原生输入。常规测试中标为忽略的桌面协议用例由上面的专用入口执行。

@@ -8,6 +8,7 @@ import scoop.test.*
 import scoop.text.repeat
 import scoop.time.Duration
 import scoop.ui.*
+import scoop.ui.component.*
 import scoop.ui.style.ThemeSource
 import scoop.ui.style.macos.macosTheme
 import scoop.window.*
@@ -53,6 +54,7 @@ private class WidgetWindowProbe {
         "中\té" + "אבג 123 abc ".repeat(10L) + "\nsecond\n" + "rows\n".repeat(99L)
     )
     val editor = CodeEditorState(doc)
+    val bodyWidth = state(340.0)
     private val inline = WidgetBox(Size(20.0, 12.0))
     private val overlay = WidgetBox(Size(41.0, 16.0))
     private val zone = WidgetBox(Size(60.0, 31.0))
@@ -100,12 +102,12 @@ private class WidgetWindowProbe {
                     .createWindow(
                         windowAttributes {
                             title = "Code editor widget geometry";
-                            size = LogicalSize(340.0, 230.0);
+                            size = LogicalSize(860.0, 230.0);
                             level = WindowLevel.AlwaysOnTop
                         }
                     )
                 window = Some(w)
-                host.attach(w, { scope -> WidgetWindowRoot(editor, scope) })
+                host.attach(w, { scope -> WidgetWindowRoot(this, scope) })
                 w.requestFocus()
                 app
                     .setControlFlow(
@@ -146,7 +148,8 @@ private class WidgetWindowProbe {
                 if (queued || finished) return
                 val ink = editor.mounted ?: return
                 val frame = ink.currentFrame() ?: return
-                if (frame.document.version != doc.version) return
+                if (frame.document.version != doc.version || stage == 0 && frame.size.width > 360.0)
+                    return
                 if (stage ==
                     1 &&
                     (zone.area?.isClosed != Some(true) || ink.contents.widgets.size != 2L)
@@ -158,7 +161,7 @@ private class WidgetWindowProbe {
                     (overlay.area?.isClosed != Some(true) || inline.area?.isClosed != Some(true))
                 )
                     return
-                if (stage == 5 && (frame.size.width < 420.0 || window?.isFocused != Some(true)))
+                if (stage == 5 && (frame.size.width < 790.0 || window?.isFocused != Some(true)))
                     return
                 if (stage == 6 && (ink.contents.widgets.size != 1L || editor.hasFocus)) return
                 if (stage == 7 && (ink.contents.widgets.size != 0L || !editor.hasFocus)) return
@@ -267,13 +270,20 @@ private class WidgetWindowProbe {
 
             case 4 -> {
                 editor.revealRange(doc.lineRange(1L))
-                window!!.requestSize(LogicalSize(540.0, 230.0))
+                bodyWidth.value = 840.0
                 stage += 1
             }
 
             case 5 -> {
                 val row = frame.rowAt(TextPosition(doc.lineRange(1L).start)) ?: return
-                assertTrue(row.ink.layout.lines.size < firstWrap)
+                assertTrue(
+                    row.ink.layout.lines.size < firstWrap,
+                    Some(
+                        f"visual rows ${firstWrap} to ${row.ink.layout.lines.size} at width ${
+                            frame.size.width
+                        }"
+                    )
+                )
                 val selected = CodeFind(editor, "second")
                 panel = Some(selected)
                 editor.requestFocus()
@@ -299,7 +309,16 @@ private class WidgetWindowProbe {
     }
 }
 
-private class WidgetWindowRoot(val editor: CodeEditorState, scope: ComponentScope) :
+private class WidgetWindowRoot(val probe: WidgetWindowProbe, scope: ComponentScope) :
     Component(scope) {
-    public override fun render(): View = codeEditor(editor)
+    public override fun render(): View {
+        val body = codeEditor(probe.editor)
+        val width = probe.bodyWidth.value
+        return row {
+            item(body) {
+                basis = FlexBasis.Fixed(width);
+                shrink = 0.0
+            }
+        }
+    }
 }

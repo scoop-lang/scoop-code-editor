@@ -1,19 +1,19 @@
 # Scoop 原生代码编辑器组件设计
 
-2026-11-26。组件的公开行为见[接口规范](SPEC.md)，本机实测见[性能记录](PERFORMANCE.md)。首版之后的功能取舍与验收目标见[Monaco 基础功能清单](MONACO-CHECKLIST.md)。
+2026-11-26。组件的公开行为见[接口规范](SPEC.md)，本机实测见[性能记录](PERFORMANCE.md)。两批功能的覆盖范围与验收场景见[Monaco 基础功能清单](MONACO-CHECKLIST.md)。
 
-宿主创建一份文档，可以把它放进两个编辑视图。左边编辑时，右边看到同一笔正文变化，两个视图各自保留选区和阅读位置。宿主还可以只用公开接口添加查找框、匹配高亮和“全部替换”。这两个场景决定首版需要怎样的存储、绘制、命令和扩展接口。
+宿主创建一份文档，可以把它放进两个编辑视图。左边编辑时，右边看到同一笔正文变化，两个视图各自保留选区和阅读位置。宿主还可以只用公开接口添加查找框、匹配高亮和“全部替换”。行上方的 CodeLens、行内参数名和不同字号的代码则共同检验排版。它们改变文字在屏幕上的位置，鼠标命中、选区和输入法候选窗都要跟随。
 
 参考版本为 Monaco Editor 0.58.0。它公开文档模型、独立的编辑器视图、范围编辑和视图扩展点。下文链接的编辑器源码来自该版实际使用的提交。Scoop 采用自己的 UTF-8 坐标、原生文本输入和 `View` 生命周期。[Monaco 版本与核心提交](https://github.com/microsoft/monaco-editor/blob/v0.58.0/package.json) · [对应的公共 API](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts)
 
 ## 1. 组件边界与所有权
 
-组件位于独立的库 Cone `scoop.ui.editor`。**正文编辑区从 `scoop.ui.Element` 起独立实现**，自有文档、视图、编辑命令和输入法适配器。宿主提供初始文本，决定文件读写和文档身份。`codeEditor(state)` 返回可放进任意布局的 `View`。首版提供原生文本编辑、行号、水平滚动、可选软换行、多选区批量操作、撤销重做、范围装饰和查找替换。折叠、范围字体、行间 CodeLens 和行内提示纳入第二批。Diff 与 Minimap 单独评估，语言服务由宿主按需接入。[两批功能与验收范围](MONACO-CHECKLIST.md)
+组件位于独立的库 Cone `scoop.ui.editor`。**正文编辑区从 `scoop.ui.Element` 起独立实现**，自有文档、视图、编辑命令和输入法适配器。宿主提供初始文本，决定文件读写和文档身份。`codeEditor(state)` 返回可放进任意布局的 `View`。基础编辑包括原生组合输入、鼠标与键盘列选、行块命令、共享撤销、查找替换及阅读位置恢复。代码视图在同一正文上叠加词法着色、折叠、范围字体、诊断、行间 CodeLens 和行内提示。Diff 与 Minimap 单独评估，语言服务由宿主按需接入。[两批功能与验收范围](MONACO-CHECKLIST.md)
 
 | 对象 | 拥有的状态 | 生命周期 |
 | --- | --- | --- |
-| `CodeDocument` | 已提交的 UTF-8 正文、行索引、正文版本、共享撤销历史、文档级装饰 | 宿主持有，可在没有窗口时创建、编辑和测试 |
-| `CodeEditorState(document)` | 一个视图的方向选区与主选区、阅读锚点、折行设置、动作与视图级装饰 | 绑定一份文档，可跨卸载保留。两个视图各建一个 state。`close()` 解除它的文档订阅和登记 |
+| `CodeDocument` | 已提交的 UTF-8 正文、行索引、正文版本、共享撤销历史、语言配置与行 token、宿主折叠范围、各来源诊断及文档级装饰 | 宿主持有，可在没有窗口时创建、编辑和测试 |
+| `CodeEditorState(document)` | 一个视图的方向选区与主选区、阅读锚点、折行设置、已折叠范围、动作、视图级装饰及有焦点的控件 | 绑定一份文档，可跨卸载保留。两个视图各建一个 state。`close()` 解除它的文档订阅和登记 |
 | 已挂载的编辑器 `Element` | 焦点、输入法连接与局部输入片段、滚动视口、当前排版、已呈现的屏幕几何和子 View | 随挂载建立与释放。重新绑定 state 时先结束原输入会话，再接入新文档 |
 
 双视图宿主为每个视图持有独立的 `CodeEditorState`，同一 state 同时只挂载一处。
@@ -65,7 +65,7 @@ class SplitEditor(scope: ComponentScope): Component(scope) {
 
 ### 3.1 一个修改入口
 
-`CodeEdit(range, text)` 表达一次替换。`document.applyEdits(expectedVersion, edits)` 接受宿主修改。`state.executeEdits(expectedVersion, edits, selectAfter)` 供交互命令调用，额外处理视图只读状态与编辑前后选区。只读视图继续观察共享正文，也可以查找、选择和复制。二者共用同一文档事务。`selectAfter` 可省略，默认把原选区映射到新正文。命令可以通过它读取各项替换得到的新范围，明确选择插入文本或把光标移到末尾。Monaco 的 `getEditOperations` 和 `computeCursorState` 解决的是同一个问题。[Monaco 编辑命令](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L2470) · [缩进命令实例](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/common/commands/shiftCommand.ts)
+`CodeEdit(range, text)` 表达一次替换。`document.applyEdits(expectedVersion, edits)` 接受宿主修改。`state.executeEdits(expectedVersion, edits, selectAfter)` 供交互命令调用，额外处理视图只读状态与编辑前后选区。只读视图继续观察共享正文，也可以查找、选择和复制。二者共用同一文档事务。`selectAfter` 可省略，默认把原选区映射到新正文。命令可以通过它读取各项替换得到的新范围，明确选择插入文本或把光标移到末尾。Monaco 的 `getEditOperations` 和 `computeCursorState` 解决的是同一个问题。[Monaco 编辑命令](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L2546) · [缩进命令实例](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/common/commands/shiftCommand.ts)
 
 1. 全部范围引用同一份编辑前正文。先检查版本和字节边界，再按旧起点排序并检查范围冲突。相邻替换合法。同一位置的多次插入、与另一替换同起点的插入，以及位于另一替换内部的插入由调用方先归并。插入若只与前一替换的终点重合，结果排在前一替换之后。
 2. 根据旧范围和插入字节数构造本次位置映射。`insertedRange(i)` 以调用方传入顺序返回第 `i` 项在新正文中的范围。纯插入点可选向前或向后黏附。非空替换的两个旧端点对应新范围的两个端点，内部被删位置按黏附方向收敛到一端。相邻替换的共同端点对应两段新内容之间。此处的黏附描述编辑时如何跟随字节，与排版的 `TextAffinity` 分开。
@@ -85,18 +85,18 @@ class SplitEditor(scope: ComponentScope): Component(scope) {
 
 ## 4. 可见行排版与绘制
 
-从文档到屏幕要经过三种坐标。**文档位置**用于编辑和装饰。**视觉行及行内位置**由 Tab 展开、输入法临时文本和软换行决定。**视口几何**再计入行号栏、滚动、裁剪和行间控件的高度。点击按相反方向映射。查找、光标和扩展控件均使用同一份映射。[Monaco 视觉行映射](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/common/viewModel/viewModelLines.ts) · [主文本的视口绘制](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/viewParts/viewLines/viewLines.ts)
+从文档到屏幕要经过三种坐标。**文档位置**用于编辑和装饰。**视觉行及行内位置**由折叠投影、Tab 展开、输入法临时文本、行内提示和软换行决定。**视口几何**再计入行号栏、滚动、裁剪和行间控件的高度。点击按相反方向映射。查找、光标和扩展控件均使用同一份映射。[Monaco 视觉行映射](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/common/viewModel/viewModelLines.ts) · [主文本的视口绘制](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/viewParts/viewLines/viewLines.ts)
 
 | 步骤 | 原生实现 |
 | --- | --- |
-| 找到可见内容 | 用 `ScrollViewport` 管理两个轴。纵向以逻辑行组织高度，先估计未测行，再用实际段落高度和行间占位更新。以视口首个可见正文位置及其屏内 y 为阅读锚点。编辑或重测发生在它上方时校正滚动，让同一内容停在原处 |
-| 排版 | 只取视口及邻近逻辑行，按每行内容和局部样式构造 `StyledText`。关闭折行时用 `layoutUnwrapped()` 并允许水平滚动，开启时按正文宽度排版。一个逻辑行内的字形、连字、字体回退和双向文字由同一 `TextLayout` 处理 |
+| 找到可见内容 | 用 `ScrollViewport` 管理两个轴。纵向只为折叠投影中可见的逻辑行计算高度，先估计未测行，再用实际段落高度、行前和行后占位更新。以视口首个可见正文位置及其屏内 y 为阅读锚点。编辑或重测发生在它上方时校正滚动，让同一内容停在原处 |
+| 排版 | 只取视口及邻近逻辑行，按源码、Tab、折叠占位和行内提示建立显示投影。对含样式的行按词法 token、范围字体及提示字体构造 `StyledText`。关闭折行时用 `layoutUnwrapped()` 并允许水平滚动，开启时按正文宽度排版。一个逻辑行内的字形、连字、字体回退和双向文字由同一 `TextLayout` 处理 |
 | 命中与导航 | 点击从 `TextLayout.hitTest` 映射回文档。caret 和选区调用同一布局的 `caret`、`selection`，保留双向文本产生的多个矩形。上下移动保留偏好 x，遇到折行或下一逻辑行时在实际排版中定位 |
 | 绘制与发布 | 行号栏用首个视觉片段显示逻辑行号。正文区域依次呈现范围背景、选择、文字、下划线和光标，行间子 View 参与正常布局。只有与当前文档及视图设置匹配的 Accepted 帧向输入法和外部查询提供屏幕几何 |
 
 Tab 默认每 4 个逻辑列设一个制表位，从逻辑行首计算，软换行沿用同一计数。含 Tab 的行在显示投影中展开为空格，保存原 Tab 两端与显示区间的对应。普通字素按簇内最大的 `unicodeScalarWidth` 计列，至少一列。实际像素仍由文字排版决定。点在展开区内取较近的端点，复制、删除和撤销操作原始 `\t`。所需的字素分段与字符宽度已有库入口。[Unicode 查询](https://github.com/scoop-lang/scoop/blob/main/sysroot/src/scoop.charset/src/unicode.scoop) · [TextLayout 几何](https://github.com/scoop-lang/scoop/blob/main/sysroot/src/scoop.graphics.text/src/layout.scoop)
 
-行布局复用依据是该行的正文和显示投影、影响排版的样式、字体集合版本及折行宽度。在前面插一行只改变后续行的文档定位，可继续复用其文字布局。选区背景变化与光标闪烁只失效绘制。当前 `ItemExtentIndex` 支持估算高度、记录实测值和按 y 查行，行数在构造后固定。行数变化时可新建稀疏索引，迁移仍保留且有效的可见行测量，用阅读锚点校正。无需按全文行数创建子 View。未折行的水平范围取已测最大宽度，显露指定位置时先测目标行。单条超长行仍可能需要整行 shaping，其成本单独测量。[高度索引](https://github.com/scoop-lang/scoop/blob/main/sysroot/src/scoop.ui.component/src/virtual/extent.scoop) · [UI 布局与帧发布](https://github.com/scoop-lang/scoop/blob/main/docs/specs/SCOOP-UI-SPEC.md#6-重建布局与呈现)
+行布局复用依据是该行的正文和显示投影、影响排版的样式、字体集合版本及折行宽度。在前面插一行只改变后续行的文档定位，可继续复用其文字布局。选区背景变化与光标闪烁只失效绘制。当前 `ItemExtentIndex` 支持估算高度、记录实测值和按 y 查行，行数在构造后固定。行数变化时可新建稀疏索引，迁移仍保留且有效的可见行测量，用阅读锚点校正。无需按全文行数创建子 View。未折行的水平范围取已测最大宽度，显露指定位置时先测目标行。单条超长行仍按整个逻辑行排版，普通视图和含扩展视图的键入与选区耗时见[四组对照](PERFORMANCE.md#两批功能完成后的复测)。[高度索引](https://github.com/scoop-lang/scoop/blob/main/sysroot/src/scoop.ui.component/src/virtual/extent.scoop) · [UI 布局与帧发布](https://github.com/scoop-lang/scoop/blob/main/docs/specs/SCOOP-UI-SPEC.md#6-重建布局与呈现)
 
 ## 5. 原生输入与无障碍
 
@@ -116,7 +116,7 @@ Monaco 0.58.0 的浏览器 `EditContext` 路径采用上述整行范围，并把
 
 ### 5.3 辅助技术读取的文档
 
-每个自绘视图通过 `SemanticsHandle.update` 发布可聚焦的多行 `TextField` 语义。读屏端读取该视图的完整编辑内容与主选区，选区使用完整文档坐标，辅助编辑走同一命令入口。查找浮层和批注各自按子 View 发布语义。原生无障碍接口若需要完整 `String`，其物化成本单独测量。精确跨行范围几何待 UI 文本语义接入多份可见布局后另行验收。[UI 文本无障碍接口](https://github.com/scoop-lang/scoop/blob/main/docs/specs/SCOOP-UI-ACCESSIBILITY-SPEC.md#5-文本编辑宿主)
+每个自绘视图通过 `SemanticsHandle.update` 发布可聚焦的多行 `TextField` 语义。读屏端读取该视图的完整编辑内容与主选区，选区使用完整文档坐标，辅助编辑走同一命令入口。查找浮层和批注各自按子 View 发布语义。每个挂载视图在同步新的文档版本时生成并缓存完整的无障碍 `String`。单纯移动光标可复用它。这项成本与输入法行片段分别测量。精确跨行范围几何待 UI 文本语义接入多份可见布局后另行验收。[UI 文本无障碍接口](https://github.com/scoop-lang/scoop/blob/main/docs/specs/SCOOP-UI-ACCESSIBILITY-SPEC.md#5-文本编辑宿主)
 
 ## 6. 扩展点与第一个使用者
 
@@ -124,18 +124,21 @@ Monaco 0.58.0 的浏览器 `EditContext` 路径采用上述整行范围，并把
 
 | 扩展入口 | 所有权与行为 | 首个用途 |
 | --- | --- | --- |
-| `document.decorations()`、`state.decorations()` | 得到支持 `set`、`clear`、`close` 的范围集合。文档集合见于所有视图，视图集合仅见于自己。每端可选插入时的黏附方向。事务用同一位置映射更新范围。支持文字前景、背景、下划线与行号栏标记。同一属性先取视图样式，同作用域按登记顺序取最后一个，交互选区使用主题的选择色 | 共享批注标记、各视图独立的查找高亮 |
+| `document.decorations()`、`state.decorations()` | 得到支持 `set`、`clear`、`close` 的范围集合。文档集合见于所有视图，视图集合仅见于自己。每端可选插入时的黏附方向。事务用同一位置映射更新范围。支持文字前景、背景、下划线、整行样式、局部字体及带动作的边栏图标。同一属性先取视图样式，同作用域按登记顺序取最后一个，交互选区使用主题的选择色 | 共享批注标记、各视图独立的查找高亮 |
 | `state.addAction`、`state.runAction(id)` | 动作按当前上下文启用，视图关闭或登记关闭后注销 | 查找下一个、替换当前、全部替换 |
 | `state.addContentWidget(position, view)` | 文本位置跟随编辑与滚动。只在锚点有已呈现几何时显示，浮在正文上方，不占行高 | 在批注位置显示提示 |
 | `state.addOverlayWidget(corner, view)` | 固定在视口一角，独立于正文滚动，可接收焦点和输入 | 查找替换面板 |
-| `state.addViewZone(afterLine, view)` | 创建时把逻辑行末转换为随编辑移动的锚点。在该逻辑行最后一个视觉片段后，按子 View 实测高度占位，影响滚动和揭示位置。删除整行时随锚点黏到存留行，登记方可随批注删除它 | 展开一条行间批注 |
+| `state.addViewZone(line, side, view)` | 锚定源码行，按子 View 实测高度在第一条视觉行之前或最后一条视觉行之后占位。折叠时隐藏被覆盖行上的控件，影响滚动和揭示位置。删除整行时随锚点黏到存留行，登记方可随批注删除它 | 展开一条行间批注 |
+| `document.language`、`lineTokens`、`setFoldingRanges` | 增量 token 缓存保存逻辑行的起始状态和结束状态。首次跳到远处未着色的行，需要从已知状态向前扫描到目标；编辑后的状态与已缓存行重新一致时，可跳过未变的连续区间。缩进或宿主提供折叠范围，每个视图独立展开 | Scoop 源码着色、嵌套注释与折叠 |
+| `state.codeLenses()`、`inlayHints()` | Lens 在行上方占位，可在进入视口后解析并通过键盘操作。行内提示在字形布局中占宽，在源码偏移的两侧各有光标停靠位置 | 运行测试按钮与参数名提示 |
+| `document.diagnostics(owner)` | 各来源独立提交带版本的范围、严重性和消息。视图显示波浪线、边栏和悬停说明，并可按顺序跳转 | 错误标记及 F8 导航 |
 | `state.visibleRanges()`、`caretRect(position)`、`revealRange(range)` | 读取最近一次匹配的已呈现几何。离屏或已过期的 caret 返回 `None`。显露请求滚动到目标并在实际排版后校正 | 查找下一个时定位，宿主锚定菜单 |
 
-范围装饰和三种控件位置分别对应 Monaco 的 decorations、content widget、overlay widget 和 view zone。首版用 Scoop 的类型化样式与 `View` 表达它们。宿主可以直接提交一批带前景色的范围，语言查询的接口随实际使用者增加。[Monaco 范围装饰](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L2793) · [三种视图扩展](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/editorBrowser.ts)
+范围装饰和三种控件位置分别对应 Monaco 的 decorations、content widget、overlay widget 和 view zone。Scoop 用类型化样式与 `View` 表达它们。宿主可以直接提交一批带前景色的范围，语言查询的接口随实际使用者增加。[Monaco 范围装饰](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L1684) · [三种视图扩展](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/browser/editorBrowser.ts)
 
-**查找替换作为普通扩展随组件交付。** 首版按非空、区分大小写的字面串查找。扩展从固定快照分片顺序读取，保留跨片段的匹配状态，得到按文档顺序排列的非重叠范围。搜索框使用 overlay，结果保存在视图装饰集合。“下一个”更新主选区并显露目标，到末尾从头继续。“全部替换”把同一快照的匹配一次交给 `executeEdits`，一次撤销恢复整批。查询为空时清除高亮。正文或查询改变时撤下旧结果并重新查询，仅接收文档、版本和查询串仍匹配的结果。焦点移入查找框后，面板仍可调用关联视图的动作，关闭时用 `state.requestFocus()` 恢复正文焦点。[Monaco 查找与替换命令](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/find/browser/findModel.ts)
+**查找替换作为普通扩展随组件交付。** 默认的区分大小写字面查找按固定快照分片扫描，保留跨片段的匹配状态。全词、忽略大小写和正则查询使用正则引擎，在同一快照上将匹配与捕获组换算为 UTF-8 范围。可限定在选区内查找，点选或跳到隐藏匹配时会展开折叠。搜索框使用 overlay，结果保存在视图装饰集合。“下一个”更新主选区并显露目标，到末尾从头继续。“全部替换”把同一快照的匹配一次交给 `executeEdits`，一次撤销恢复整批。查询为空时清除高亮。正文或查询改变时撤下旧结果并重新查询，仅接收文档、版本和查询串仍匹配的结果。焦点移入查找框后，面板仍可调用关联视图的动作，关闭时用 `state.requestFocus()` 恢复正文焦点。[Monaco 查找与替换命令](https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/find/browser/findModel.ts)
 
-下面是扩展内“全部替换”的调用。`findLiteral` 属于查找扩展，返回快照中的 `Utf8Range` 列表，空查询返回空列表。编辑器负责只读判断、版本检查、位置映射和撤销。
+下面以区分大小写的字面查找演示“全部替换”的事务。`findLiteral` 属于查找扩展，返回快照中的 `Utf8Range` 列表，空查询返回空列表。编辑器负责只读判断、版本检查、位置映射和撤销。
 
 ```kotlin
 fun replaceAll(state: CodeEditorState, query: String, replacement: String): CodeEditResult {
@@ -156,4 +159,4 @@ fun replaceAll(state: CodeEditorState, query: String, replacement: String): Code
 | 2. 可编辑视口 | 两个视图编辑同一文档，支持滚动、软换行、键鼠选区、剪贴板、原生输入与基本无障碍动作 | 在左侧键入后从右侧撤销，检查折行、阅读锚点、Tab、字素和双向命中。原生窗口检查普通光标只发布一行、跨行主选区包含完整范围、组合中换行、相同内容的两行切换、迟到批次及另一视图修改时的取消。读屏读取范围继续覆盖文档 |
 | 3. 公开扩展 | 查找替换和可展开的行间批注只引用公开接口 | 验证跨 piece 匹配、过期结果、只读视图、批量替换一次撤销、两视图高亮隔离。滚动、改宽、删除锚点所在行、关闭登记后，提示、占位及命中随之更新 |
 
-普通行为用所属 Cone 的 `scoop.test` 覆盖，原生输入、辅助技术和 Accepted 几何用真实窗口验证。性能取十万短行和字节数相近的单条长行，记录打开、键入、滚动、中文组合输入、整批替换及撤销的耗时与峰值内存。对同样的当前行和主选区，增加远处的行数后，传给 IME 的文本字节数应保持相同。超长单行或选区覆盖全文时，片段本身可能很大，这两种情况与完整无障碍值的发布分别测量。
+普通行为用所属 Cone 的 `scoop.test` 覆盖，原生输入、辅助技术和 Accepted 几何用真实窗口验证。性能取十万短行和同字节数的单条长行，比较普通视图和启用扩展的视图，记录打开、键入、滚动、命中、选区、中文组合输入、整批替换及撤销的耗时与峰值内存。对同样的当前行和主选区，增加远处的行数后，传给 IME 的文本字节数应保持相同。超长单行或选区覆盖全文时，片段本身可能很大，这两种情况与完整无障碍值的发布分别测量。

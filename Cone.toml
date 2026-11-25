@@ -27,3 +27,22 @@ kind = "library"
 [test-dependencies]
 "scoop:scoop.test" = "0.1.0"
 "scoop:scoop.ui.style.macos" = "0.1.0"
+
+[[test.sources]]
+path = "tests"
+
+[[test.sources]]
+path = "test-desktop"
+when = { os = ["linux", "windows"] }
+
+[[test.sources]]
+path = "test-darwin"
+when = { os = "darwin" }
+
+[[test.sources]]
+path = "test-linux"
+when = { os = "linux" }
+
+[[test.sources]]
+path = "test-windows"
+when = { os = "windows" }
