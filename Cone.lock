@@ -328,6 +328,19 @@ kind = "sysroot"
 name = "scoop.icons.lucide"
 
 [[resolutions.nodes]]
+coordinate = "scoop:scoop.json:0.1.0"
+kind = "library"
+dependencies = [
+    "scoop:scoop.core:0.1.0",
+    "scoop:scoop.std:0.1.0",
+]
+test-dependencies = []
+
+[resolutions.nodes.source]
+kind = "sysroot"
+name = "scoop.json"
+
+[[resolutions.nodes]]
 coordinate = "scoop:scoop.math:0.1.0"
 kind = "library"
 dependencies = [
@@ -435,6 +448,7 @@ dependencies = [
     "scoop:scoop.core:0.1.0",
     "scoop:scoop.graphics.text:0.1.0",
     "scoop:scoop.graphics:0.1.0",
+    "scoop:scoop.json:0.1.0",
     "scoop:scoop.platform:0.1.0",
     "scoop:scoop.regex:0.1.0",
     "scoop:scoop.std:0.1.0",

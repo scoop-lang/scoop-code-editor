@@ -1,15 +1,33 @@
 package scoop.ui.editor
 
 import scoop.surface.*
-import scoop.window.ShortcutChord
+import scoop.window.*
+
+public struct CodeActionInfo(
+    val id: String,
+    val label: String,
+    val shortcut: ShortcutChord?,
+    val enabled: Boolean
+)
 
 internal class EditorAction(
     val id: String,
     val label: String,
-    val shortcut: ShortcutChord?,
+    val original: ShortcutChord?,
     val enabled: (CodeEditorState) -> Boolean,
-    val run: (CodeEditorState) -> Unit
-)
+    val run: (CodeEditorState) -> Unit,
+    val native: TextEditCommand? = None
+) {
+    var shortcut: ShortcutChord? = original
+}
+
+private fun CodeEditorState.checkShortcut(except: String, value: ShortcutChord?) {
+    val chord = value ?: return
+    for (entry in actions) {
+        if (entry.id != except && (entry.shortcut?.equivalentTo(chord) ?: false))
+            throw IllegalArgumentException(Some("duplicate editor shortcut"))
+    }
+}
 
 public fun CodeEditorState.addAction(
     id: String,
@@ -20,54 +38,100 @@ public fun CodeEditorState.addAction(
 ): Closeable {
     if (closed || id.byteLength == 0L)
         throw IllegalArgumentException(Some("invalid action or closed editor"))
-    for (entry in actions) {
+    for (entry in actions)
         if (entry.id == id) throw IllegalArgumentException(Some("duplicate editor action id"))
-        if (when (shortcut) {
-            case Some(val chord) -> entry.shortcut?.equivalentTo(chord) ?: false;
-            case None -> false
-        }
-        )
-            throw IllegalArgumentException(Some("duplicate editor shortcut"))
-    }
-    val action = EditorAction(id, label, shortcut, enabled, run)
-    actions.add(action)
+    checkShortcut(id, shortcut)
+    val item = EditorAction(id, label, shortcut, enabled, run)
+    actions.add(item)
     mounted?.updateShortcuts()
+    if (mounted?.ended == Some(false)) menuRevision.value += 1L
     return EditorRegistration {
         for (i in 0L..<actions.size) {
-            if (actions[i] === action) {
+            if (actions[i] === item) {
                 actions.removeAt(i);
                 break
             }
         }
         mounted?.updateShortcuts()
+        if (mounted?.ended == Some(false)) menuRevision.value += 1L
     }
 }
 
-public fun CodeEditorState.runAction(id: String): Boolean {
-    if (closed) return false
-    for (action in actions) {
-        if (action.id == id && action.enabled(this)) {
+private fun CodeEditorState.enabled(action: EditorAction): Boolean = !closed &&
+    (mounted?.input?.composing != Some(true) || action.native == Some(TextEditCommand.Cancel)) &&
+    action.enabled(this)
+
+public fun CodeEditorState.listActions(): Array<CodeActionInfo> = Array<CodeActionInfo>(
+    actions.size
+) { i ->
+    val a = actions[i]
+    CodeActionInfo(a.id, a.label, a.shortcut, enabled(a))
+}
+
+public fun CodeEditorState.canRunAction(id: String): Boolean {
+    for (a in actions)
+        if (a.id == id) return enabled(a)
+    return false
+}
+
+public fun CodeEditorState.setActionShortcut(id: String, shortcut: ShortcutChord?): Boolean {
+    for (a in actions)
+        if (a.id == id) {
+            checkShortcut(id, shortcut)
+            a.shortcut = shortcut
+            mounted?.updateShortcuts()
+            if (mounted?.ended == Some(false)) menuRevision.value += 1L
+            return true
+        }
+    return false
+}
+
+private fun CodeEditorState.invoke(action: EditorAction): Boolean {
+    if (!enabled(action)) return false
+    when (action.native) {
+        case Some(_) -> action.run(this)
+
+        case None -> {
             breakUndoGroup()
             try {
                 action.run(this)
             } finally {
                 breakUndoGroup()
             }
-            return true
         }
+    }
+    return true
+}
+
+public fun CodeEditorState.runAction(id: String): Boolean {
+    for (a in actions)
+        if (a.id == id) return invoke(a)
+    return false
+}
+
+internal fun CodeEditorState.invokeCommand(cmd: TextEditCommand): Boolean {
+    for (a in actions)
+        if (a.native == Some(cmd)) return invoke(a)
+    return false
+}
+
+internal fun CodeEditorState.keyWasRebound(key: KeyEvent): Boolean {
+    for (a in actions) {
+        if ((a.original?.matches(key) ?: false) && !(a.shortcut?.matches(key) ?: false)) return true
     }
     return false
 }
 
 internal fun EditorInk.updateShortcuts() {
     val state = editor
+    val body = area
     val bindings = ArrayList<ShortcutBinding>()
     for (action in state.actions) {
         val chord = action.shortcut ?: continue
         bindings
             .add(
-                shortcutBinding(chord, { state.runAction(action.id) }) {
-                    canExecute = { !state.closed && action.enabled(state) }
+                shortcutBinding(chord, { state.invoke(action) }) {
+                    canExecute = { body.isFocusActive && state.enabled(action) }
                 }
             )
     }

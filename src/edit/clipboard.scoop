@@ -1,0 +1,154 @@
+package scoop.ui.editor
+
+import scoop.collections.joinToString
+import scoop.json.*
+import scoop.text.lines
+import scoop.text.replace
+import scoop.window.*
+
+public enum CodeMultiCursorPaste {
+    Spread, Full
+}
+
+/** Each piece includes its original newlines. Line copies include their terminating newline. */
+public class CodeClipboardContent public constructor(
+    pieces: List<String>,
+    public val wholeLines: Boolean = false
+) {
+    public val parts: Array<String> = pieces.toArray()
+    public val text: String get() = parts.joinToString(if (wholeLines) "" else "\n")
+    internal fun encoded(): String {
+        val lines = wholeLines
+        val values = JsonValue
+            .fromArray(Array<JsonValue>(parts.size) { i -> JsonValue.fromString(parts[i]) })
+        return Json
+            .stringify(
+                jsonObject {
+                    add("lines", JsonValue.fromBoolean(lines))
+                    add("parts", values)
+                }
+            )
+    }
+}
+
+private val selectionMedia: String get() = "text/x-scoop-editor-selections"
+
+internal fun decodeClipboard(value: String): CodeClipboardContent? {
+    return try {
+        val root = Json.parse(value)
+        val lines = root["lines"]?.asBoolean() ?: return None
+        val array = root["parts"] ?: return None
+        if (array.kind != JsonValueKind.Array || array.size == 0L) return None
+        Some(CodeClipboardContent(Array<String>(array.size) { i -> array[i].asString() }, lines))
+    } catch (error: DecodingException) {
+        None
+    }
+}
+
+private fun CodeSelections.allCarets(): Boolean {
+    for (s in values)
+        if (s.range.start != s.range.end) return false
+    return true
+}
+
+public fun CodeEditorState.copyContent(): CodeClipboardContent {
+    val parts = ArrayList<String>()
+    val rows = selections.allCarets()
+    var last = -1L
+    for (s in selections.values) {
+        if (rows) {
+            val line = document.positionAt(s.cursor.byteOffset).line
+            if (line == last) continue
+            val text = document.read(document.lineRange(line, true))
+            parts.add(if (line == document.lineCount - 1L) text + document.endingAt(line) else text)
+            last = line
+        } else
+            parts.add(document.read(s.range))
+    }
+    return CodeClipboardContent(parts, rows)
+}
+
+public fun CodeEditorState.cutContent(): CodeEditResult = if (selections.allCarets())
+    editLines(CodeLineCommand.Delete)
+else
+    replaceSelections("", CodeEditKind.Command)
+
+public fun CodeEditorState.pasteContent(
+    content: CodeClipboardContent,
+    mode: CodeMultiCursorPaste = options.multiCursorPaste
+): CodeEditResult {
+    val before = selections
+    if (content.parts.size == 0L) return CodeEditResult.Unchanged
+    if (content.wholeLines && before.allCarets()) {
+        val starts = ArrayList<Long>()
+        for (s in before.values) {
+            val start = document.lineRange(document.positionAt(s.cursor.byteOffset).line).start
+            if (starts.size == 0L || starts[starts.size - 1L] != start) starts.add(start)
+        }
+        val full = content.text
+        val spread = mode == CodeMultiCursorPaste.Spread && starts.size == content.parts.size
+        return executeEdits(
+            document.version,
+            Array<CodeEdit>(starts.size) { i ->
+                val at = starts[i]
+                CodeEdit(Utf8Range(at, at), if (spread) content.parts[i] else full)
+            },
+            kind = CodeEditKind.Paste
+        )
+    }
+    val full = content.text
+    val pieces = if (content.parts.size ==
+        1L &&
+        before.values.size >
+        1L &&
+        mode ==
+        CodeMultiCursorPaste.Spread
+    )
+        full.lines().toArray()
+    else
+        content.parts
+    val spread = mode == CodeMultiCursorPaste.Spread && pieces.size == before.values.size
+    val edits = Array<CodeEdit>(before.values.size) { i ->
+        CodeEdit(before.values[i].range, if (spread) pieces[i] else full)
+    }
+    return executeEdits(
+        document.version,
+        edits,
+        Some(
+            { map ->
+                CodeSelections(
+                    Array<CodeSelection>(edits.size) { i ->
+                        CodeSelection.caret(map.insertedRange(i).end)
+                    },
+                    before.primaryIndex
+                )
+            }
+        ),
+        CodeEditKind.Paste
+    )
+}
+
+internal fun EditorInk.copyToSystem(cut: Boolean) {
+    val item = editor.copyContent()
+    scope
+        .nativeWindow
+        .clipboard
+        .writeTexts(
+            [
+                ClipboardText("text/plain", item.text.replace("\u{0}", "\u{fffd}")),
+                ClipboardText(selectionMedia, item.encoded())
+            ]
+        )
+    if (cut) editor.cutContent()
+}
+
+internal fun EditorInk.pasteFromSystem(): Boolean {
+    val clipboard = scope.nativeWindow.clipboard
+    val pieces = when (val encoded = clipboard.readText(selectionMedia)) {
+        case Some(val value) -> decodeClipboard(value)
+        case None -> None
+    }
+    val content = pieces ?: CodeClipboardContent([clipboard.readText() ?: return false])
+    editor.pasteContent(content)
+    return true
+}

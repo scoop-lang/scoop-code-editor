@@ -245,6 +245,14 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                 ) {
                     accepted?.release()
                     accepted = Some(retained)
+                    owner.refreshMenuStatus()
+                    if (owner.focusAfterLayout) {
+                        owner.focusAfterLayout = false
+                        scope
+                            .application
+                            .proxy()
+                            .post { _ -> if (!owner.closed) owner.requestFocus() }
+                    }
                     if (editor.reveal == pending) editor.reveal = None
                     layoutEngine.anchor = None
                     val ranges = retained.visible()

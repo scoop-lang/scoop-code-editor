@@ -69,6 +69,7 @@ private class WidgetWindowProbe {
     private var stage = 0
     private var queued = false
     var finished = false
+    private var nextFocusAttempt = MonotonicTimeSource.now()
     private val end = MonotonicTimeSource.now() + Duration.seconds(30L)
 
     fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
@@ -115,8 +116,25 @@ private class WidgetWindowProbe {
 
             case NewEvents(StartCause.Deadline) -> {
                 if (stage == 0) window?.requestRedraw()
-                if (MonotonicTimeSource.now() >= end)
-                    fail(Some(f"widget geometry wait expired at stage ${stage}"))
+                val now = MonotonicTimeSource.now()
+                if (stage >= 5 && window?.isFocused != Some(true) && now >= nextFocusAttempt) {
+                    window?.requestFocus()
+                    nextFocusAttempt = now + Duration.milliseconds(500L)
+                }
+                if (MonotonicTimeSource.now() >= end) {
+                    val current = editor.mounted!!
+                    fail(
+                        Some(
+                            f"widget stage ${stage}, widgets ${
+                                current.contents.widgets.size
+                            }, logical focus ${current.area.hasFocus}, active focus ${
+                                editor.hasFocus
+                            }, can focus ${current.area.canFocus}, native focus ${
+                                window!!.isFocused
+                            }, pending ${editor.focusAfterLayout}"
+                        )
+                    )
+                }
                 app
                     .setControlFlow(
                         ControlFlow
@@ -140,7 +158,8 @@ private class WidgetWindowProbe {
                     (overlay.area?.isClosed != Some(true) || inline.area?.isClosed != Some(true))
                 )
                     return
-                if (stage == 5 && frame.size.width < 420.0) return
+                if (stage == 5 && (frame.size.width < 420.0 || window?.isFocused != Some(true)))
+                    return
                 if (stage == 6 && (ink.contents.widgets.size != 1L || editor.hasFocus)) return
                 if (stage == 7 && (ink.contents.widgets.size != 0L || !editor.hasFocus)) return
                 queued = true

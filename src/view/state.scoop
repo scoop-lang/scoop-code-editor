@@ -12,6 +12,9 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     private var current = CodeSelections([CodeSelection.caret(0L)])
     public val selections: CodeSelections get() = current
     internal val actions = ArrayList<EditorAction>()
+    internal val menuRevision = state(0L)
+    internal var focusAfterLayout = false
+    internal var menuStatus = -1
     internal var activeFind: CodeFind? = None
     public val find: CodeFind get() = activeFind ?: CodeFind(this)
     internal val widgets = ArrayList<EditorWidget>()
@@ -25,6 +28,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     public val scroll = ScrollState()
     private var settings = CodeEditorOptions()
     private var locked = false
+    public var tabMovesFocus: Boolean = false
     public var options: CodeEditorOptions
         get() = settings
         set(value) {
@@ -66,11 +70,12 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
             case None -> {}
         }
     }
-    public fun requestFocus(): Boolean = mounted?.area?.requestFocus() ?: false
+    public fun requestFocus(): Boolean = mounted?.focus?.handle?.requestFocus() ?: false
     public val hasFocus: Boolean get() = mounted?.area?.isFocusActive ?: false
 
     init {
         document.attach(this)
+        installNativeActions()
         installLineActions()
         installFindActions()
     }

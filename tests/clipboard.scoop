@@ -1,0 +1,69 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.*
+
+@Test
+private class ClipboardCommandTests {
+    @Test
+    fun lineCopyAtEofUsesNativeMetadataAndPastesAtLineStart() {
+        val e = CodeEditorState(CodeDocument("  first\r\n中"))
+        e.setSelections([CodeSelection.caret(e.document.byteLength)])
+        val copy = e.copyContent()
+        assertTrue(copy.wholeLines)
+        assertEquals("中\r\n", copy.text)
+        val saved = decodeClipboard(copy.encoded())!!
+        e.cutContent()
+        assertEquals("  first", e.document.read(e.document.lineRange(0L)))
+        e.undo()
+        e.setSelections([CodeSelection.caret(2L)])
+        e.pasteContent(saved)
+        assertEquals("中\r\n  first\r\n中", e.document.read(Utf8Range(0L, e.document.byteLength)))
+        assertEquals(7L, e.selections.primary.cursor.byteOffset)
+        e.undo()
+        assertEquals(2L, e.selections.primary.cursor.byteOffset)
+    }
+
+    @Test
+    fun pasteDistributesMultilinePiecesAndCanRepeatWholeClipboard() {
+        val e = CodeEditorState(CodeDocument("A B"))
+        e.setSelections([CodeSelection.offsets(0L, 1L), CodeSelection.offsets(2L, 3L)], 1L)
+        val copied = CodeClipboardContent(["一\r\n二", "三"])
+        e.pasteContent(copied)
+        assertEquals("一\r\n二 三", e.document.read(Utf8Range(0L, e.document.byteLength)))
+        e.undo()
+        e.pasteContent(CodeClipboardContent(["x\ny"]))
+        assertEquals("x y", e.document.read(e.document.lineRange(0L)))
+        e.undo()
+        e.pasteContent(CodeClipboardContent(["a", "b"]), CodeMultiCursorPaste.Full)
+        assertEquals("a\nb a\nb", e.document.read(Utf8Range(0L, e.document.byteLength)))
+        assertTrue(decodeClipboard("broken")?.text == None)
+    }
+
+    @Test
+    fun nativeAndProgrammaticCommandsShareAvailabilityAndHistory() {
+        val e = CodeEditorState(CodeDocument("abc"))
+        assertFalse(e.canRunAction("edit.undo"))
+        assertTrue(e.runAction("edit.delete"))
+        assertTrue(e.runAction("edit.delete"))
+        assertEquals("c", e.document.read(e.document.lineRange(0L)))
+        assertTrue(e.runAction("edit.undo"))
+        assertEquals("abc", e.document.read(e.document.lineRange(0L)))
+        e.setSelections([CodeSelection.caret(0L), CodeSelection.offsets(1L, 3L)], 1L)
+        e.runAction("selection.cancel")
+        assertEquals(1L, e.selections.values.size)
+        e.runAction("selection.cancel")
+        assertEquals(3L, e.selections.primary.range.start)
+        assertTrue(e.setActionShortcut("edit.undo", None))
+        var found = false
+        for (a in e.listActions())
+            if (a.id == "edit.undo") {
+                found = true
+                assertTrue(a.shortcut?.modifiers?.primary == None)
+            }
+        assertTrue(found)
+        e.readOnly = true
+        assertFalse(e.runAction("edit.backspace"))
+        assertTrue(e.runAction("selection.all"))
+    }
+}

@@ -4,11 +4,11 @@ import scoop.graphics.*
 import scoop.graphics.text.*
 import scoop.window.*
 
-private fun EditorInk.withLine(
+internal fun <T> EditorInk.withLine(
     line: Long,
     frame: EditorFrame,
-    run: (ScreenRow) -> TextPosition
-): TextPosition {
+    run: (ScreenRow) -> T
+): T {
     for (row in frame.rows) {
         if (row.line == line) return run(row)
     }
@@ -40,7 +40,7 @@ private fun EditorInk.withLine(
         }
 }
 
-private fun EditorInk.destination(
+internal fun EditorInk.destination(
     cursor: TextPosition,
     move: TextMovement,
     preferred: Double?,
@@ -72,6 +72,23 @@ private fun EditorInk.destination(
             cursor
         val pos = row.display(at)
         val layout = row.ink.layout
+        if (move == TextMovement.LineStart) {
+            val edge = layout.moveCaret(pos, CaretMovement.LineStart)?.position ?: pos
+            val start = row.source(edge)
+            if (start.byteOffset == row.range.start) {
+                val nonBlank = doc.indentRange(logical.line).end
+                val first = layout.lines[0L]
+                if (nonBlank !=
+                    cursor.byteOffset &&
+                    nonBlank <
+                    row.range.end &&
+                    row.display(TextPosition(nonBlank)).byteOffset <=
+                    first.contentRange.end
+                )
+                    return@withLine TextPosition(nonBlank)
+            }
+            return@withLine start
+        }
         val action = when (move) {
             case Left -> CaretMovement.Left;
             case Right -> CaretMovement.Right
@@ -120,7 +137,7 @@ private fun EditorInk.destination(
     }
 }
 
-private fun EditorInk.move(motion: TextMovement, extend: Boolean) {
+internal fun EditorInk.move(motion: TextMovement, extend: Boolean) {
     val frame = currentFrame() ?: return
     val old = editor.selections
     val values = ArrayList<CodeSelection>()
@@ -156,80 +173,41 @@ private fun EditorInk.move(motion: TextMovement, extend: Boolean) {
     preferredX = columns.toArray()
 }
 
-internal fun EditorInk.command(cmd: TextEditCommand): Boolean {
-    if (!area.isFocusActive || ended) return false
-    if (input.composing && cmd != TextEditCommand.Cancel) return false
-    when (cmd) {
-        case Move(val motion, val extend) -> move(motion, extend)
-        case SelectAll -> editor.selectAll()
+internal fun EditorInk.command(cmd: TextEditCommand): Boolean = !ended &&
+    area.isFocusActive &&
+    editor.invokeCommand(cmd)
 
-        case Copy -> {
-            val text = editor.selectedText();
-            if (text.byteLength > 0L) scope.nativeWindow.clipboard.writeText(text);
-            return true
-        }
+internal fun EditorInk.cancelComposition() {
+    input.synchronize(true)
+    retiring = area.restartTextInput()
+    projectionChanged = true
+    scope.requestLayout()
+}
 
-        case Cancel -> {
-            if (!input.composing) return false;
-            input.synchronize(true);
-            retiring = area.restartTextInput();
-            projectionChanged = true;
-            scope.requestLayout()
-        }
-
-        else -> {
-            if (editor.readOnly) return false
-            when (cmd) {
-                case Delete(TextDeletion.Forward) -> editor.deleteGrapheme(true)
-                case Delete(TextDeletion.Backward) -> editor.deleteGrapheme(false)
-
-                case Delete(val d) -> {
-                    val motion = when (d) {
-                        case WordBackward -> TextMovement.WordBackward;
-                        case WordForward -> TextMovement.WordForward
-                        case LineStart -> TextMovement.LineStart;
-                        case LineEnd -> TextMovement.LineEnd;
-                        case ParagraphStart -> TextMovement.ParagraphStart
-                        else -> TextMovement.ParagraphEnd
-                    }
-                    val frame = currentFrame() ?: return false
-                    val old = editor.selections
-                    val values = Array<CodeSelection>(old.values.size) { i ->
-                        val s = old.values[i]
-                        if (s.range.start < s.range.end)
-                            s
-                        else
-                            CodeSelection(s.anchor, destination(s.cursor, motion, None, frame))
-                    }
-                    editor.setSelections(values, old.primaryIndex)
-                    editor.replaceSelections("", CodeEditKind.Command)
-                }
-
-                case Undo -> editor.undo()
-                case Redo -> editor.redo()
-                case DeleteSelection -> editor.replaceSelections("", CodeEditKind.Command)
-
-                case Cut -> {
-                    val text = editor.selectedText();
-                    if (text.byteLength > 0L) {
-                        scope.nativeWindow.clipboard.writeText(text);
-                        editor.replaceSelections("", CodeEditKind.Command)
-                    }
-                }
-
-                case Paste -> {
-                    val text = scope.nativeWindow.clipboard.readText() ?: return false;
-                    editor.replaceSelections(text, CodeEditKind.Paste)
-                }
-
-                case InsertNewline -> editor.insertNewline()
-                case InsertTab -> editor.insertTab()
-                case InsertBacktab -> editor.indent(true)
-                else -> return false
-            }
-            preferredX = []
-        }
+internal fun EditorInk.deleteTo(d: TextDeletion) {
+    val motion = when (d) {
+        case WordBackward -> TextMovement.WordBackward
+        case WordForward -> TextMovement.WordForward
+        case LineStart -> TextMovement.LineStart
+        case LineEnd -> TextMovement.LineEnd
+        case ParagraphStart -> TextMovement.ParagraphStart
+        else -> TextMovement.ParagraphEnd
     }
-    editor.revealRange(editor.selections.primary.range)
-    return true
+    val frame = currentFrame() ?: return
+    val old = editor.selections
+    val ranges = Array<CodeSelection>(old.values.size) { i ->
+        val s = old.values[i]
+        if (s.range.start != s.range.end)
+            s
+        else
+            CodeSelection(s.anchor, destination(s.cursor, motion, None, frame))
+    }
+    val normalized = normalizedSelections(
+        editor.document.root,
+        CodeSelections(ranges, old.primaryIndex)
+    )!!
+    val edits = Array<CodeEdit>(normalized.values.size) { i ->
+        CodeEdit(normalized.values[i].range, "")
+    }
+    editor.executeEdits(editor.document.version, edits)
 }

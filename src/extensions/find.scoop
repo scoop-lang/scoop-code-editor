@@ -225,7 +225,14 @@ public class CodeFind public constructor(
     public fun closePanel() {
         panel?.close()
         panel = None
-        editor.requestFocus()
+        when (val ink = editor.mounted) {
+            case Some(val view) -> {
+                editor.focusAfterLayout = true;
+                view.scope.requestLayout()
+            }
+
+            case None -> {}
+        }
     }
     public override fun close() {
         if (closed) return

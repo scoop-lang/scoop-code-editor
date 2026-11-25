@@ -1,0 +1,41 @@
+package scoop.ui.editor
+
+import scoop.ui.*
+import scoop.ui.component.*
+
+/** Builds the edit menu for a host menu bar or the editor's native context menu. */
+public fun CodeEditorState.nativeEditMenu(
+    ids: List<String> = [
+        "edit.undo",
+        "edit.redo",
+        "edit.cut",
+        "edit.copy",
+        "edit.paste",
+        "selection.all",
+        "find.open"
+    ]
+): NativeMenuContent {
+    menuRevision.value
+    val view = this
+    return nativeMenu {
+        for (id in ids)
+            for (action in view.actions) {
+                if (action.id != id) continue
+                item(ViewKey.Text(id), action.label, { _ -> view.runAction(id) }) {
+                    enabled = view.canRunAction(id)
+                    shortcut = action.shortcut
+                }
+            }
+    }
+}
+
+internal fun CodeEditorState.refreshMenuStatus() {
+    val status = (if (canUndo) 1 else 0) +
+        (if (canRedo) 2 else 0) +
+        (if (readOnly) 4 else 0) +
+        (if (mounted?.ended == Some(false)) 8 else 0) +
+        (if (mounted?.input?.composing == Some(true)) 16 else 0)
+    if (status == menuStatus) return
+    menuStatus = status
+    menuRevision.value += 1L
+}

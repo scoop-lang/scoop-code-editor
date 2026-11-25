@@ -195,6 +195,10 @@ internal fun EditorInk.event(context: RoutedEventContext, event: InputEvent) {
 
         case Keyboard(val key) -> {
             if (!area.isFocusActive || key.state != ElementState.Pressed || key.synthetic) return
+            if (editor.keyWasRebound(key)) {
+                context.consume();
+                return
+            }
             var handled = false
             for (cmd in key.textCommands) {
                 if (command(cmd)) handled = true

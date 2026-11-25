@@ -5,6 +5,7 @@ import scoop.graphics.*
 import scoop.graphics.text.TextPosition
 import scoop.ui.*
 import scoop.ui.component.ItemExtentIndex
+import scoop.ui.component.nativeContextMenu
 
 internal class WidgetLayout(
     val ink: EditorInk,
@@ -119,11 +120,12 @@ internal class EditorComponent(val input: Props<CodeEditorState>, scope: Compone
             val widget = widgets[i]
             element({ mount -> WidgetSlot(mount) }, [widget.view], ViewKey.Number(widget.id))
         }
-        return element(
+        val body = element(
             EditorContents(state, widgets),
             { props, mount -> EditorInk(props, mount) },
             children
         )
+        return nativeContextMenu(body, state.nativeEditMenu())
     }
 }
 

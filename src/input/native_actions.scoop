@@ -1,0 +1,235 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+internal fun CodeEditorState.hasLayout(): Boolean {
+    val ink = mounted ?: return false
+    return ink.currentFrame()?.rows?.size != None
+}
+
+private fun CodeEditorState.nativeEnabled(cmd: TextEditCommand): Boolean = when (cmd) {
+    case Move(_, _) -> hasLayout()
+    case SelectAll -> true
+    case Copy -> mounted?.ended == Some(false)
+    case Cut -> !readOnly && mounted?.ended == Some(false)
+    case Paste -> !readOnly && mounted?.ended == Some(false)
+    case Undo -> canUndo
+    case Redo -> canRedo
+    case Cancel ->
+        mounted?.input?.composing ==
+            Some(true) ||
+            selections.values.size >
+            1L ||
+            selections.primary.range.start !=
+            selections.primary.range.end
+    case InsertTab -> !readOnly && !tabMovesFocus
+    case InsertBacktab -> !readOnly && !tabMovesFocus
+    case Delete(val d) ->
+        !readOnly && (d == TextDeletion.Forward || d == TextDeletion.Backward || hasLayout())
+    else -> !readOnly
+}
+
+private fun CodeEditorState.nativeAction(
+    id: String,
+    label: String,
+    cmd: TextEditCommand,
+    chord: ShortcutChord? = None
+) {
+    actions
+        .add(
+            EditorAction(
+                id,
+                label,
+                chord,
+                { view -> view.nativeEnabled(cmd) },
+                { view -> view.performCommand(cmd) },
+                Some(cmd)
+            )
+        )
+}
+
+private fun CodeEditorState.motion(
+    id: String,
+    name: String,
+    direction: TextMovement,
+    key: NamedKey? = None,
+    mods: ShortcutModifiers = ShortcutModifiers()
+) {
+    nativeAction(
+        "cursor." + id, "Move " + name, TextEditCommand.Move(direction, false),
+        when (key) {
+            case Some(val k) -> namedShortcut(k, mods);
+            case None -> None
+        }
+    )
+    val shift = ShortcutModifiers(
+        primary = mods.primary,
+        shift = true,
+        control = mods.control,
+        alt = mods.alt,
+        superKey = mods.superKey
+    )
+    nativeAction(
+        "selection." + id, "Select " + name, TextEditCommand.Move(direction, true),
+        when (key) {
+            case Some(val k) -> namedShortcut(k, shift);
+            case None -> None
+        }
+    )
+}
+
+internal fun CodeEditorState.installNativeActions() {
+    val primary = ShortcutModifiers(primary = true)
+    motion("left", "left", TextMovement.Left, Some(NamedKey.ArrowLeft))
+    motion("right", "right", TextMovement.Right, Some(NamedKey.ArrowRight))
+    motion("up", "up", TextMovement.Up, Some(NamedKey.ArrowUp))
+    motion("down", "down", TextMovement.Down, Some(NamedKey.ArrowDown))
+    motion("backward", "back one grapheme", TextMovement.Backward)
+    motion("forward", "forward one grapheme", TextMovement.Forward)
+    motion("wordLeft", "one word left", TextMovement.WordLeft)
+    motion("wordRight", "one word right", TextMovement.WordRight)
+    motion("wordBackward", "back one word", TextMovement.WordBackward)
+    motion("wordForward", "forward one word", TextMovement.WordForward)
+    motion("home", "to visual line start", TextMovement.LineStart, Some(NamedKey.Home))
+    motion("end", "to visual line end", TextMovement.LineEnd, Some(NamedKey.End))
+    motion("lineLeft", "to the left line edge", TextMovement.LineLeft)
+    motion("lineRight", "to the right line edge", TextMovement.LineRight)
+    motion("lineStart", "to logical line start", TextMovement.ParagraphStart)
+    motion("lineEnd", "to logical line end", TextMovement.ParagraphEnd)
+    motion(
+        "documentStart",
+        "to document start",
+        TextMovement.DocumentStart,
+        Some(NamedKey.Home),
+        primary
+    )
+    motion("documentEnd", "to document end", TextMovement.DocumentEnd, Some(NamedKey.End), primary)
+    motion("pageUp", "up one page", TextMovement.PageUp, Some(NamedKey.PageUp))
+    motion("pageDown", "down one page", TextMovement.PageDown, Some(NamedKey.PageDown))
+    nativeAction("edit.undo", "Undo", TextEditCommand.Undo, characterShortcut("z", primary))
+    nativeAction(
+        "edit.redo",
+        "Redo",
+        TextEditCommand.Redo,
+        characterShortcut("z", ShortcutModifiers(primary = true, shift = true))
+    )
+    nativeAction(
+        "selection.all",
+        "Select all",
+        TextEditCommand.SelectAll,
+        characterShortcut("a", primary)
+    )
+    nativeAction("edit.copy", "Copy", TextEditCommand.Copy, characterShortcut("c", primary))
+    nativeAction("edit.cut", "Cut", TextEditCommand.Cut, characterShortcut("x", primary))
+    nativeAction("edit.paste", "Paste", TextEditCommand.Paste, characterShortcut("v", primary))
+    nativeAction(
+        "edit.newline",
+        "Insert newline",
+        TextEditCommand.InsertNewline,
+        namedShortcut(NamedKey.Enter)
+    )
+    nativeAction(
+        "edit.tab",
+        "Insert tab or indent",
+        TextEditCommand.InsertTab,
+        namedShortcut(NamedKey.Tab)
+    )
+    nativeAction(
+        "edit.backtab",
+        "Outdent",
+        TextEditCommand.InsertBacktab,
+        namedShortcut(NamedKey.Tab, ShortcutModifiers(shift = true))
+    )
+    nativeAction(
+        "selection.cancel",
+        "Cancel composition or selection",
+        TextEditCommand.Cancel,
+        namedShortcut(NamedKey.Escape)
+    )
+    nativeAction("edit.deleteSelection", "Delete selection", TextEditCommand.DeleteSelection)
+    nativeAction(
+        "edit.backspace",
+        "Delete backward",
+        TextEditCommand.Delete(TextDeletion.Backward),
+        namedShortcut(NamedKey.Backspace)
+    )
+    nativeAction(
+        "edit.delete",
+        "Delete forward",
+        TextEditCommand.Delete(TextDeletion.Forward),
+        namedShortcut(NamedKey.Delete)
+    )
+    nativeAction(
+        "edit.deleteWordBackward",
+        "Delete word backward",
+        TextEditCommand.Delete(TextDeletion.WordBackward)
+    )
+    nativeAction(
+        "edit.deleteWordForward",
+        "Delete word forward",
+        TextEditCommand.Delete(TextDeletion.WordForward)
+    )
+    nativeAction(
+        "edit.deleteToLineStart",
+        "Delete to visual line start",
+        TextEditCommand.Delete(TextDeletion.LineStart)
+    )
+    nativeAction(
+        "edit.deleteToLineEnd",
+        "Delete to visual line end",
+        TextEditCommand.Delete(TextDeletion.LineEnd)
+    )
+    nativeAction(
+        "edit.deleteToParagraphStart",
+        "Delete to logical line start",
+        TextEditCommand.Delete(TextDeletion.ParagraphStart)
+    )
+    nativeAction(
+        "edit.deleteToParagraphEnd",
+        "Delete to logical line end",
+        TextEditCommand.Delete(TextDeletion.ParagraphEnd)
+    )
+    addAction(
+        "focus.toggleTab",
+        "Toggle Tab focus traversal",
+        namedShortcut(NamedKey.F6, ShortcutModifiers(control = true))
+    ) { view -> view.tabMovesFocus = !view.tabMovesFocus }
+}
+
+private fun CodeEditorState.performCommand(cmd: TextEditCommand) {
+    when (cmd) {
+        case Move(val direction, val extend) -> mounted?.move(direction, extend)
+        case SelectAll -> selectAll()
+        case Copy -> mounted?.copyToSystem(false)
+        case Cut -> mounted?.copyToSystem(true)
+        case Paste -> mounted?.pasteFromSystem()
+        case Undo -> undo()
+        case Redo -> redo()
+        case InsertNewline -> insertNewline()
+        case InsertTab -> insertTab()
+        case InsertBacktab -> indent(true)
+        case DeleteSelection -> replaceSelections("", CodeEditKind.Command)
+        case Delete(TextDeletion.Forward) -> deleteGrapheme(true)
+        case Delete(TextDeletion.Backward) -> deleteGrapheme(false)
+        case Delete(val d) -> mounted?.deleteTo(d)
+
+        case Cancel -> {
+            val ink = mounted
+            if (ink?.input?.composing == Some(true))
+                ink!!.cancelComposition()
+            else if (selections.values.size > 1L)
+                setSelections([selections.primary])
+            else
+                setSelections([CodeSelection(selections.primary.cursor, selections.primary.cursor)])
+        }
+    }
+    when (cmd) {
+        case Move(_, _) -> {};
+        case Copy -> return;
+
+        else -> {
+            if (mounted?.ended == Some(false)) mounted!!.preferredX = []
+        }
+    }
+    if (mounted?.ended == Some(false)) revealRange(selections.primary.range)
+}
