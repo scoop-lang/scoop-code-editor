@@ -223,13 +223,8 @@ internal fun EditorInk.command(cmd: TextEditCommand): Boolean {
                 }
 
                 case InsertNewline -> editor.insertNewline()
-                case InsertTab ->
-                    if (editor.selections.primary.range.start == editor.selections.primary.range.end
-                    )
-                        editor.replaceSelections("\t", CodeEditKind.Command)
-                    else
-                        editor.indent()
-                case InsertBacktab -> editor.indent(true, editor.options.tabSize)
+                case InsertTab -> editor.insertTab()
+                case InsertBacktab -> editor.indent(true)
                 else -> return false
             }
             preferredX = []

@@ -53,7 +53,7 @@ public fun CodeEditorState.selectAll() {
     setSelections([CodeSelection.offsets(0L, document.byteLength)])
 }
 
-private fun CodeEditorState.replaceEach(
+internal fun CodeEditorState.replaceEach(
     kind: CodeEditKind,
     text: (CodeSelection) -> String
 ): CodeEditResult {
@@ -87,11 +87,11 @@ public fun CodeEditorState.insertNewline(): CodeEditResult = replaceEach(CodeEdi
     selection
     ->
     val doc = document
-    var line = doc.positionAt(selection.cursor.byteOffset).line
-    if (line == doc.lineCount - 1L && line > 0L) line -= 1L
-    val end = doc.lineRange(line).end
-    val next = doc.lineRange(line, true).end
-    if (end == next) "\n" else doc.read(Utf8Range(end, next))
+    val offset = selection.range.start
+    val line = doc.positionAt(offset).line
+    val prefix = doc.indentRange(line)
+    return@replaceEach doc.endingAt(line) +
+        doc.read(Utf8Range(prefix.start, if (offset < prefix.end) offset else prefix.end))
 }
 
 public fun CodeEditorState.deleteGrapheme(forward: Boolean): CodeEditResult {
@@ -99,7 +99,10 @@ public fun CodeEditorState.deleteGrapheme(forward: Boolean): CodeEditResult {
     for (s in selections.values) {
         var r = s.range
         if (r.start == r.end) {
-            val offset = adjacentGrapheme(document, r.start, forward)
+            val offset = if (forward)
+                adjacentGrapheme(document, r.start, true)
+            else
+                backspaceStart(r.start)
             r = if (forward) Utf8Range(r.start, offset) else Utf8Range(offset, r.start)
         }
         if (r.start == r.end) continue
@@ -125,39 +128,4 @@ public fun CodeEditorState.selectedText(): String {
         out.append(document.read(selections.values[i].range))
     }
     return out.toString()
-}
-
-public fun CodeEditorState.indent(outdent: Boolean = false, tabSize: Long = 4L): CodeEditResult {
-    if (tabSize <= 0L) return CodeEditResult.Invalid
-    val edits = ArrayList<CodeEdit>()
-    var touched = -1L
-    for (s in selections.values) {
-        val r = s.range
-        val first = document.positionAt(r.start).line
-        val end = document.positionAt(r.end)
-        val last = if (r.start < r.end && end.column == 0L && end.line > first)
-            end.line - 1L
-        else
-            end.line
-        for (line in first..<last + 1L) {
-            if (line <= touched) continue
-            touched = line
-            val range = document.lineRange(line)
-            if (outdent) {
-                var bytes = 0L
-                while (bytes < tabSize && range.start + bytes < range.end) {
-                    val ch = treeByte(document.root, range.start + bytes).toInt()
-                    if (bytes == 0L && ch == 9) {
-                        bytes = 1L;
-                        break
-                    }
-                    if (ch != 32) break
-                    bytes += 1L
-                }
-                if (bytes > 0L) edits.add(CodeEdit(Utf8Range(range.start, range.start + bytes), ""))
-            } else
-                edits.add(CodeEdit(Utf8Range(range.start, range.start), "\t"))
-        }
-    }
-    return executeEdits(document.version, edits)
 }

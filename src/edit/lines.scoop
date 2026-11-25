@@ -1,0 +1,207 @@
+package scoop.ui.editor
+
+import scoop.graphics.text.TextPosition
+import scoop.window.Utf8Range
+
+public enum CodeLineCommand {
+    MoveUp, MoveDown, CopyUp, CopyDown, Delete, InsertAbove, InsertBelow, Join
+}
+
+internal class SelectedLines(val first: Long, var last: Long, val from: Long, var through: Long)
+
+internal fun CodeEditorState.selectedLines(joinNext: Boolean = false): Array<SelectedLines> {
+    val blocks = ArrayList<SelectedLines>()
+    for (i in 0L..<selections.values.size) {
+        val r = selections.values[i].range
+        val first = document.positionAt(r.start).line
+        val end = document.positionAt(r.end)
+        var last = if (r.end > r.start && end.line > first && end.column == 0L)
+            end.line - 1L
+        else
+            end.line
+        if (joinNext && first == last && last + 1L < document.lineCount) last += 1L
+        if (blocks.size > 0L && first <= blocks[blocks.size - 1L].last + if (joinNext) 0L else 1L) {
+            val previous = blocks[blocks.size - 1L]
+            if (last > previous.last) previous.last = last
+            previous.through = i
+        } else
+            blocks.add(SelectedLines(first, last, i, i))
+    }
+    return blocks.toArray()
+}
+
+private class LineReplacement(
+    val edit: CodeEdit,
+    val start: Long,
+    val trailing: Long,
+    val caret: Boolean = false
+)
+
+private fun CodeDocument.lineReplacement(
+    block: SelectedLines,
+    cmd: CodeLineCommand
+): LineReplacement? {
+    val top = lineRange(block.first)
+    val bottom = lineRange(block.last)
+    val r = Utf8Range(top.start, bottom.end)
+    val eol = endingAt(block.last)
+    val actualBreak = lineRange(block.last, true).end - bottom.end
+    when (cmd) {
+        case MoveUp -> {
+            if (block.first == 0L) return None
+            val prev = lineRange(block.first - 1L)
+            val sep = endingAt(block.first - 1L)
+            return Some(
+                LineReplacement(
+                    CodeEdit(Utf8Range(prev.start, r.end), read(r) + sep + read(prev)),
+                    0L,
+                    sep.byteLength
+                )
+            )
+        }
+
+        case MoveDown -> {
+            if (block.last + 1L == lineCount) return None
+            val next = lineRange(block.last + 1L)
+            val prefix = read(next) + eol
+            return Some(
+                LineReplacement(
+                    CodeEdit(Utf8Range(r.start, next.end), prefix + read(r)),
+                    prefix.byteLength,
+                    lineRange(block.last + 1L, true).end - next.end
+                )
+            )
+        }
+
+        case CopyUp ->
+            return Some(
+                LineReplacement(
+                    CodeEdit(Utf8Range(r.start, r.start), read(r) + eol),
+                    0L,
+                    eol.byteLength
+                )
+            )
+        case CopyDown ->
+            return Some(
+                LineReplacement(
+                    CodeEdit(Utf8Range(r.end, r.end), eol + read(r)),
+                    eol.byteLength,
+                    actualBreak
+                )
+            )
+
+        case InsertAbove -> {
+            val prefix = read(indentRange(block.first))
+            return Some(
+                LineReplacement(
+                    CodeEdit(Utf8Range(r.start, r.start), prefix + endingAt(block.first)),
+                    prefix.byteLength,
+                    0L,
+                    true
+                )
+            )
+        }
+
+        case InsertBelow -> {
+            val text = eol + read(indentRange(block.last))
+            return Some(
+                LineReplacement(CodeEdit(Utf8Range(r.end, r.end), text), text.byteLength, 0L, true)
+            )
+        }
+
+        case Delete -> {
+            val start = if (block.last + 1L == lineCount && block.first > 0L)
+                lineRange(block.first - 1L).end
+            else
+                r.start
+            return Some(
+                LineReplacement(CodeEdit(Utf8Range(start, r.end + actualBreak), ""), 0L, 0L, true)
+            )
+        }
+
+        case Join -> return None
+    }
+}
+
+private fun CodeEditorState.joinLines(): CodeEditResult {
+    val edits = ArrayList<CodeEdit>()
+    fun endsInWord(r: Utf8Range): Boolean {
+        if (r.start == r.end) return false
+        val last = treeByte(document.root, r.end - 1L).toInt()
+        return last != 32 && last != 9
+    }
+    for (block in selectedLines(true)) {
+        var needsSpace = endsInWord(document.lineRange(block.first))
+        for (line in block.first..<block.last) {
+            val current = document.lineRange(line)
+            val next = document.lineRange(line + 1L)
+            val nonBlank = document.indentRange(line + 1L).end
+            val suffix = nonBlank < next.end
+            edits
+                .add(
+                    CodeEdit(
+                        Utf8Range(current.end, nonBlank),
+                        if (needsSpace && suffix) " " else ""
+                    )
+                )
+            if (suffix) needsSpace = endsInWord(next)
+        }
+    }
+    return executeEdits(document.version, edits)
+}
+
+private class LineSelectionTarget(val editIndex: Long, val anchor: Long, val cursor: Long)
+
+public fun CodeEditorState.editLines(cmd: CodeLineCommand): CodeEditResult {
+    if (cmd == CodeLineCommand.Join) return joinLines()
+    val before = selections
+    val targets = MutableArray<LineSelectionTarget?>(before.values.size) { _ -> None }
+    val edits = ArrayList<CodeEdit>()
+    for (block in selectedLines()) {
+        val replacement = document.lineReplacement(block, cmd) ?: continue
+        val start = document.lineRange(block.first).start
+        val end = document.lineRange(block.last).end
+        fun relative(at: Long): Long {
+            if (replacement.caret) return replacement.start
+            return replacement.start +
+                if (at > end) end - start + replacement.trailing else at - start
+        }
+        for (i in block.from..<block.through + 1L) {
+            val s = before.values[i]
+            targets[i] = Some(
+                LineSelectionTarget(
+                    edits.size,
+                    relative(s.anchor.byteOffset),
+                    relative(s.cursor.byteOffset)
+                )
+            )
+        }
+        edits.add(replacement.edit)
+    }
+    return executeEdits(
+        document.version,
+        edits,
+        Some(
+            { map ->
+                val mapped = map.mapSelections(before)
+                CodeSelections(
+                    Array<CodeSelection>(before.values.size) { i ->
+                        val s = before.values[i]
+                        when (val target = targets[i]) {
+                            case Some(val t) -> {
+                                val at = map.insertedRange(t.editIndex).start
+                                CodeSelection(
+                                    TextPosition(at + t.anchor, s.anchor.affinity),
+                                    TextPosition(at + t.cursor, s.cursor.affinity)
+                                )
+                            }
+
+                            case None -> mapped.values[i]
+                        }
+                    },
+                    before.primaryIndex
+                )
+            }
+        )
+    )
+}

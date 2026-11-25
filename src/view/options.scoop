@@ -15,9 +15,12 @@ public class CodeEditorOptions public constructor(
     public val background: Color = Color.White,
     public val gutter: Color = Color(0.41, 0.44, 0.49),
     public val selection: Color = Color(0.56, 0.75, 1.0, 0.68),
-    public val caret: Color = Color(0.12, 0.22, 0.40)
+    public val caret: Color = Color(0.12, 0.22, 0.40),
+    public val insertSpaces: Boolean = false,
+    public val indentSize: Long = tabSize
 ) {
     init {
-        if (tabSize <= 0L) throw IllegalArgumentException(Some("tab size must be positive"))
+        if (tabSize <= 0L || indentSize <= 0L)
+            throw IllegalArgumentException(Some("tab and indent sizes must be positive"))
     }
 }

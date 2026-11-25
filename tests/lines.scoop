@@ -1,0 +1,90 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class EditorLineTests {
+    @Test
+    fun moveDuplicateAndDeleteRestoreSelectionsAndMixedLineEndings() {
+        val doc = CodeDocument("pre\r\n α\n中\r\nend")
+        val view = CodeEditorState(doc)
+        val start = doc.lineRange(1L).start
+        val end = doc.lineRange(3L).start
+        view.setSelections([CodeSelection.offsets(end, start)])
+        assertTrue(view.runAction("line.moveUp"))
+        assertEquals(" α\n中\r\npre\r\nend", doc.read(Utf8Range(0L, doc.byteLength)))
+        assertEquals(0L, view.selections.primary.cursor.byteOffset)
+        assertEquals(doc.lineRange(2L).start, view.selections.primary.anchor.byteOffset)
+        assertTrue(view.canUndo)
+        assertEquals(CodeEditResult.Applied, view.undo())
+        assertEquals(start, view.selections.primary.cursor.byteOffset)
+        assertTrue(view.canRedo)
+        view.redo()
+        view.editLines(CodeLineCommand.CopyDown)
+        assertEquals(" α\n中\r\n α\n中\r\npre\r\nend", doc.read(Utf8Range(0L, doc.byteLength)))
+        view.editLines(CodeLineCommand.Delete)
+        assertEquals(" α\n中\r\npre\r\nend", doc.read(Utf8Range(0L, doc.byteLength)))
+        view.readOnly = true
+        assertFalse(view.canUndo)
+        assertFalse(view.runAction("line.delete"))
+    }
+
+    @Test
+    fun insertJoinAndDuplicateReverseSelectionAtEndOfDocument() {
+        val doc = CodeDocument("  one\r\n  two")
+        val e = CodeEditorState(doc)
+        e.setSelections([CodeSelection.caret(doc.byteLength)])
+        e.editLines(CodeLineCommand.InsertBelow)
+        assertEquals("  one\r\n  two\r\n  ", doc.read(Utf8Range(0L, doc.byteLength)))
+        assertEquals(doc.byteLength, e.selections.primary.cursor.byteOffset)
+        e.undo()
+        e.setSelections([CodeSelection.caret(0L)])
+        e.editLines(CodeLineCommand.Join)
+        assertEquals("  one two", doc.read(Utf8Range(0L, doc.byteLength)))
+        e.setSelections([CodeSelection.offsets(9L, 6L)])
+        e.duplicateSelection()
+        assertEquals("  one twotwo", doc.read(Utf8Range(0L, doc.byteLength)))
+        assertEquals(12L, e.selections.primary.anchor.byteOffset)
+        assertEquals(9L, e.selections.primary.cursor.byteOffset)
+        e.undo()
+        e.setSelections([CodeSelection.caret(doc.byteLength)])
+        e.editLines(CodeLineCommand.Delete)
+        assertEquals(0L, doc.byteLength)
+    }
+
+    @Test
+    fun joinAcrossBlankLineKeepsWordsSeparated() {
+        val doc = CodeDocument("left\n   \n right")
+        val e = CodeEditorState(doc)
+        e.selectAll()
+        e.editLines(CodeLineCommand.Join)
+        assertEquals("left right", doc.read(doc.lineRange(0L)))
+    }
+
+    @Test
+    fun indentationUsesVisualColumnsAndExplicitEolIsUndoable() {
+        val doc = CodeDocument(" 中\r\n  next\rend")
+        val e = CodeEditorState(doc)
+        e.options = CodeEditorOptions(tabSize = 4L, insertSpaces = true, indentSize = 2L)
+        e.setSelections([CodeSelection.caret(4L)])
+        e.insertTab()
+        assertEquals(" 中 ", doc.read(doc.lineRange(0L)))
+        e.setSelections([CodeSelection.caret(doc.lineRange(1L).end)])
+        e.insertNewline()
+        assertEquals("  ", doc.read(doc.lineRange(2L)))
+        e.deleteGrapheme(false)
+        assertEquals("", doc.read(doc.lineRange(2L)))
+        e.setSelections([CodeSelection.offsets(0L, doc.lineRange(2L).start)])
+        e.indent()
+        assertEquals("  中 ", doc.read(doc.lineRange(0L)))
+        assertEquals("    next", doc.read(doc.lineRange(1L)))
+        assertEquals("", doc.read(doc.lineRange(2L)))
+        e.convertIndentation(false)
+        assertEquals("\tnext", doc.read(doc.lineRange(1L)))
+        e.convertLineEndings(CodeLineEnding.LF)
+        assertEquals("  中 \n\tnext\n\nend", doc.read(Utf8Range(0L, doc.byteLength)))
+        e.undo()
+        assertEquals("  中 \r\n\tnext\r\rend", doc.read(Utf8Range(0L, doc.byteLength)))
+    }
+}

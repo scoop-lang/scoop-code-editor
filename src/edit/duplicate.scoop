@@ -1,0 +1,90 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.window.Utf8Range
+
+private class DuplicatePart(
+    val index: Long,
+    val at: Long,
+    val text: String,
+    val line: Boolean,
+    val anchor: Long,
+    val cursor: Long
+)
+
+public fun CodeEditorState.duplicateSelection(): CodeEditResult {
+    val before = selections
+    val parts = ArrayList<DuplicatePart>()
+    for (i in 0L..<before.values.size) {
+        val s = before.values[i]
+        val r = s.range
+        if (r.start == r.end) {
+            val line = document.positionAt(r.start).line
+            val row = document.lineRange(line)
+            val eol = document.endingAt(line)
+            val offset = eol.byteLength + r.start - row.start
+            parts.add(DuplicatePart(i, row.end, eol + document.read(row), true, offset, offset))
+        } else {
+            val text = document.read(r)
+            parts
+                .add(
+                    DuplicatePart(
+                        i,
+                        r.end,
+                        text,
+                        false,
+                        s.anchor.byteOffset - r.start,
+                        s.cursor.byteOffset - r.start
+                    )
+                )
+        }
+    }
+    parts
+        .sortWith(
+            comparatorOf<DuplicatePart> { a, b ->
+                val byPosition = a.at.compareTo(b.at)
+                if (byPosition != 0 || a.line == b.line) byPosition else if (a.line) 1 else -1
+            }
+        )
+    val edits = ArrayList<CodeEdit>()
+    val indices = MutableArray<Long>(parts.size) { _ -> 0L }
+    val offsets = MutableArray<CodeSelection>(parts.size) { _ -> CodeSelection.caret(0L) }
+    var i = 0L
+    while (i < parts.size) {
+        val at = parts[i].at
+        val text = StringBuilder()
+        var size = 0L
+        var lineStart = -1L
+        while (i < parts.size && parts[i].at == at) {
+            val part = parts[i]
+            val start = if (part.line && lineStart >= 0L) lineStart else size
+            if (!part.line || lineStart < 0L) {
+                if (part.line) lineStart = size
+                text.append(part.text)
+                size += part.text.byteLength
+            }
+            indices[part.index] = edits.size
+            offsets[part.index] = CodeSelection.offsets(start + part.anchor, start + part.cursor)
+            i += 1L
+        }
+        edits.add(CodeEdit(Utf8Range(at, at), text.toString()))
+    }
+    return executeEdits(
+        document.version,
+        edits,
+        Some(
+            { map ->
+                CodeSelections(
+                    Array<CodeSelection>(before.values.size) { k ->
+                        val at = map.insertedRange(indices[k]).start
+                        val pos = offsets[k]
+                        CodeSelection
+                            .offsets(at + pos.anchor.byteOffset, at + pos.cursor.byteOffset)
+                    },
+                    before.primaryIndex
+                )
+            }
+        )
+    )
+}

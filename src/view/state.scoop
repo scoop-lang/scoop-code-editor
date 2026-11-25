@@ -69,6 +69,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
 
     init {
         document.attach(this)
+        installLineActions()
     }
 
     public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents
@@ -96,6 +97,8 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         kind: CodeEditKind = CodeEditKind.Command
     ): CodeEditResult = document.transact(Some(this), expectedVersion, edits, selectAfter, kind)
 
+    public val canUndo: Boolean get() = !closed && !readOnly && document.history.undo.size > 0L
+    public val canRedo: Boolean get() = !closed && !readOnly && document.history.redo.size > 0L
     public fun undo(): CodeEditResult = document.replay(this, false)
     public fun redo(): CodeEditResult = document.replay(this, true)
     public fun breakUndoGroup() {

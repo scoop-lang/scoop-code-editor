@@ -1,0 +1,102 @@
+package scoop.ui.editor
+
+import scoop.window.*
+
+internal fun namedShortcut(
+    key: NamedKey,
+    modifiers: ShortcutModifiers = ShortcutModifiers()
+): ShortcutChord? = Some(ShortcutChord(ShortcutKey.Logical(LogicalKey.Named(key)), modifiers))
+
+internal fun characterShortcut(key: String, modifiers: ShortcutModifiers): ShortcutChord? = Some(
+    ShortcutChord(ShortcutKey.Logical(LogicalKey.Character(key)), modifiers)
+)
+
+private fun CodeEditorState.lineAction(
+    id: String,
+    label: String,
+    cmd: CodeLineCommand,
+    key: ShortcutChord? = None
+) {
+    addAction(id, label, key, { view -> !view.readOnly }) { view -> view.editLines(cmd) }
+}
+
+internal fun CodeEditorState.installLineActions() {
+    val alt = ShortcutModifiers(alt = true)
+    val copy = ShortcutModifiers(alt = true, shift = true)
+    val primary = ShortcutModifiers(primary = true)
+    val shifted = ShortcutModifiers(primary = true, shift = true)
+    lineAction(
+        "line.moveUp",
+        "Move lines up",
+        CodeLineCommand.MoveUp,
+        namedShortcut(NamedKey.ArrowUp, alt)
+    )
+    lineAction(
+        "line.moveDown",
+        "Move lines down",
+        CodeLineCommand.MoveDown,
+        namedShortcut(NamedKey.ArrowDown, alt)
+    )
+    lineAction(
+        "line.copyUp",
+        "Copy lines up",
+        CodeLineCommand.CopyUp,
+        namedShortcut(NamedKey.ArrowUp, copy)
+    )
+    lineAction(
+        "line.copyDown",
+        "Copy lines down",
+        CodeLineCommand.CopyDown,
+        namedShortcut(NamedKey.ArrowDown, copy)
+    )
+    lineAction(
+        "line.delete",
+        "Delete lines",
+        CodeLineCommand.Delete,
+        characterShortcut("k", shifted)
+    )
+    lineAction(
+        "line.insertAbove",
+        "Insert line above",
+        CodeLineCommand.InsertAbove,
+        namedShortcut(NamedKey.Enter, shifted)
+    )
+    lineAction(
+        "line.insertBelow",
+        "Insert line below",
+        CodeLineCommand.InsertBelow,
+        namedShortcut(NamedKey.Enter, primary)
+    )
+    lineAction("line.join", "Join lines", CodeLineCommand.Join)
+    addAction("selection.duplicate", "Duplicate selection", enabled = { e -> !e.readOnly }) { e ->
+        e.duplicateSelection()
+    }
+    addAction(
+        "line.indent",
+        "Indent lines",
+        characterShortcut("]", primary),
+        { e -> !e.readOnly }
+    ) { e -> e.indent() }
+    addAction(
+        "line.outdent",
+        "Outdent lines",
+        characterShortcut("[", primary),
+        { e -> !e.readOnly }
+    ) { e -> e.indent(true) }
+    addAction("indent.toSpaces", "Convert indentation to spaces", enabled = { e -> !e.readOnly }) {
+        e
+        ->
+        e.convertIndentation(true)
+    }
+    addAction("indent.toTabs", "Convert indentation to tabs", enabled = { e -> !e.readOnly }) { e ->
+        e.convertIndentation(false)
+    }
+    addAction("lineEnding.lf", "Convert line endings to LF", enabled = { e -> !e.readOnly }) { e ->
+        e.convertLineEndings(CodeLineEnding.LF)
+    }
+    addAction("lineEnding.crlf", "Convert line endings to CRLF", enabled = { e -> !e.readOnly }) {
+        e
+        ->
+        e.convertLineEndings(CodeLineEnding.CRLF)
+    }
+}

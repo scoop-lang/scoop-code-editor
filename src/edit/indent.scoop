@@ -1,0 +1,160 @@
+package scoop.ui.editor
+
+import scoop.charset.graphemeBoundaries
+import scoop.charset.unicodeScalarWidth
+import scoop.text.repeat
+import scoop.window.Utf8Range
+
+public enum CodeLineEnding {
+    LF, CRLF
+}
+
+internal fun CodeDocument.endingAt(line: Long): String {
+    val source = if (line == lineCount - 1L && line > 0L) line - 1L else line
+    val end = lineRange(source).end
+    val next = lineRange(source, true).end
+    return if (end == next) "\n" else read(Utf8Range(end, next))
+}
+
+internal fun CodeDocument.indentRange(line: Long): Utf8Range {
+    val r = lineRange(line)
+    var end = r.start
+    while (end < r.end) {
+        val ch = treeByte(root, end).toInt()
+        if (ch != 32 && ch != 9) break
+        end += 1L
+    }
+    return Utf8Range(r.start, end)
+}
+
+internal fun indentColumns(text: String, tab: Long): Long {
+    var cells = 0L
+    for (ch in text)
+        cells += if (ch == '\t') tab - cells % tab else 1L
+    return cells
+}
+
+internal fun displayColumns(text: String, tab: Long): Long {
+    val boundaries = graphemeBoundaries(text)
+    var column = 0L
+    var cluster = 0L
+    var scalar = 0L
+    var width = 0L
+    for (ch in text) {
+        if (scalar == boundaries[cluster]) {
+            column += width
+            width = 1L
+            cluster += 1L
+        }
+        if (ch == '\t')
+            width = tab - column % tab
+        else {
+            val w = unicodeScalarWidth(ch).toLong()
+            if (w > width) width = w
+        }
+        scalar += 1L
+    }
+    return column + width
+}
+
+internal fun indentation(columns: Long, tab: Long, spaces: Boolean): String = if (spaces)
+    " ".repeat(columns)
+else
+    "\t".repeat(columns / tab) + " ".repeat(columns % tab)
+
+public fun CodeEditorState.insertTab(): CodeEditResult {
+    for (s in selections.values)
+        if (s.range.start != s.range.end) return indent()
+    return replaceEach(CodeEditKind.Command) { s ->
+        if (!options.insertSpaces)
+            "\t"
+        else {
+            val r = document.lineRange(document.positionAt(s.cursor.byteOffset).line)
+            val cells = displayColumns(
+                document.read(Utf8Range(r.start, s.cursor.byteOffset)),
+                options.tabSize
+            )
+            " ".repeat(options.indentSize - cells % options.indentSize)
+        }
+    }
+}
+
+public fun CodeEditorState.indent(
+    outdent: Boolean = false,
+    tabSize: Long = options.indentSize
+): CodeEditResult {
+    if (tabSize <= 0L) return CodeEditResult.Invalid
+    val edits = ArrayList<CodeEdit>()
+    for (block in selectedLines()) {
+        for (line in block.first..<block.last + 1L) {
+            val r = document.indentRange(line)
+            val old = document.read(r)
+            val cells = indentColumns(old, options.tabSize)
+            if (outdent && cells == 0L) continue
+            val target = if (outdent)
+                (cells - 1L) / tabSize * tabSize
+            else
+                cells + tabSize - cells % tabSize
+            // Retain as much of the original prefix as possible.
+            var kept = 0L
+            var width = 0L
+            for (ch in old) {
+                val next = width + if (ch == '\t') options.tabSize - width % options.tabSize else 1L
+                if (next > target) break
+                width = next
+                kept += 1L
+            }
+            val suffix = StringBuilder()
+            while (width < target) {
+                val stop = width + options.tabSize - width % options.tabSize
+                if (!options.insertSpaces && stop <= target) {
+                    suffix.append('\t')
+                    width = stop
+                } else {
+                    suffix.append(' ')
+                    width += 1L
+                }
+            }
+            edits.add(CodeEdit(Utf8Range(r.start + kept, r.end), suffix.toString()))
+        }
+    }
+    return executeEdits(document.version, edits)
+}
+
+public fun CodeEditorState.convertIndentation(toSpaces: Boolean): CodeEditResult {
+    val edits = ArrayList<CodeEdit>()
+    for (line in 0L..<document.lineCount) {
+        val r = document.indentRange(line)
+        if (r.start == r.end) continue
+        val old = document.read(r)
+        val text = indentation(indentColumns(old, options.tabSize), options.tabSize, toSpaces)
+        if (old != text) edits.add(CodeEdit(r, text))
+    }
+    return executeEdits(document.version, edits)
+}
+
+public fun CodeEditorState.convertLineEndings(ending: CodeLineEnding): CodeEditResult {
+    val eol = if (ending == CodeLineEnding.CRLF) "\r\n" else "\n"
+    val edits = ArrayList<CodeEdit>()
+    for (line in 0L..<document.lineCount - 1L) {
+        val r = Utf8Range(document.lineRange(line).end, document.lineRange(line, true).end)
+        if (document.read(r) != eol) edits.add(CodeEdit(r, eol))
+    }
+    return executeEdits(document.version, edits)
+}
+
+internal fun CodeEditorState.backspaceStart(offset: Long): Long {
+    val doc = document
+    val line = doc.positionAt(offset).line
+    val r = doc.indentRange(line)
+    if (offset <= r.start || offset > r.end || treeByte(doc.root, offset - 1L).toInt() != 32)
+        return adjacentGrapheme(doc, offset, false)
+    val column = indentColumns(doc.read(Utf8Range(r.start, offset)), options.tabSize)
+    val count = (column - 1L) % options.indentSize + 1L
+    var begin = offset
+    while (
+        begin > r.start && offset - begin < count && treeByte(doc.root, begin - 1L).toInt() == 32
+    )
+        begin -= 1L
+    return begin
+}
