@@ -68,9 +68,9 @@ private class CodeExtensionTests {
         val incoming = ArrayList<CodeDecoration>()
         doc.decorationStore.collect(doc.lineRange(0L), incoming)
         state.decorationStore.collect(doc.lineRange(0L), incoming)
-        val colors = foregroundRuns(doc.lineRange(0L), incoming.toArray())
+        val colors = textStyleRuns(doc.lineRange(0L), incoming.toArray())
         assertEquals(3L, colors.size)
-        assertEquals(blue, colors[1L].color)
+        assertEquals(Some(blue), colors[1L].layers[colors[1L].layers.size - 1L].color)
         assertFailsWith<IllegalArgumentException> {
             shared.set([CodeDecoration(Utf8Range(4L, 9L), CodeDecorationStyle())])
         }

@@ -1,0 +1,178 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+@Test
+private class RangeFontTests {
+    @Test(useProcess = true)
+    fun mixedRangeFontsShapeScrollingHitTestingSelectionAndNativeCaret() {
+        val run = FontWindow()
+        UiHost(
+            onRootError = { _, err -> throw err },
+            handler = { host, app, event -> run.event(host, app, event) }
+        )
+            .use { host -> Application().run(host) }
+        assertTrue(run.finished)
+    }
+}
+
+private class FontWindow {
+    private val sample = "aWWW中bbbbbbbbbbb"
+    private val doc = CodeDocument((sample + "\n").repeat(45L))
+    val editor = CodeEditorState(doc)
+    private val shared = doc.decorations()
+    private val local = editor.decorations()
+    private val background = editor.decorations()
+    private val deadline = MonotonicTimeSource.now() + Duration.seconds(16L)
+    private var stage = 0
+    private var queued = false
+    private var width = 0.0
+    private var height = 0.0
+    private var lines = 0L
+    private var normal: ShapedLine? = None
+    var finished = false
+    init {
+        editor.options = CodeEditorOptions(softWrap = true)
+    }
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Range fonts and native caret";
+                            size = LogicalSize(254.0, 160.0)
+                        }
+                    )
+                host.attach(w, { scope -> FontView(editor, scope) })
+                w.requestFocus()
+                app.setControlFlow(ControlFlow.WaitUntil(deadline))
+            }
+
+            case NewEvents(StartCause.Deadline) -> fail(Some(f"range font stage ${stage}"))
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                val frame = ink.currentFrame() ?: return
+                if (queued ||
+                    finished ||
+                    stage ==
+                    1 &&
+                    (!editor.hasFocus || ink.area.visibleCaretBounds == None)
+                )
+                    return
+                queued = true
+                app
+                    .proxy()
+                    .post { active ->
+                        queued = false
+                        val row = frame.rows[0L]
+                        val caret = row.ink.layout.caret(row.display(TextPosition(3L)))!!
+                        when (stage) {
+                            case 0 -> {
+                                width = caret.x
+                                height = row.height
+                                lines = row.ink.layout.lines.size
+                                val font = spanStyle {
+                                    fontSize = Some(48.0);
+                                    families = Some(["Times New Roman", "serif"])
+                                }
+                                val range = CodeDecorationStyle(font = Some(font))
+                                val far = doc.lineRange(40L).start
+                                shared
+                                    .set(
+                                        [
+                                            CodeDecoration(Utf8Range(1L, 7L), range),
+                                            CodeDecoration(Utf8Range(far + 1L, far + 7L), range)
+                                        ]
+                                    )
+                                val italic = spanStyle {
+                                    weight = Some(700);
+                                    slant = Some(FontSlant.Italic)
+                                }
+                                local
+                                    .set(
+                                        [
+                                            CodeDecoration(
+                                                Utf8Range(2L, 4L),
+                                                CodeDecorationStyle(font = Some(italic))
+                                            )
+                                        ]
+                                    )
+                                editor.setSelections([CodeSelection.caret(3L)])
+                                assertTrue(editor.requestFocus())
+                            }
+
+                            case 1 -> {
+                                assertTrue(caret.x > width * 1.5)
+                                assertTrue(row.height > height && row.ink.layout.lines.size > lines)
+                                val p = frame.displayCaret(TextPosition(3L))!!
+                                val at = frame.hit(Point(p.x + 0.1, p.y + p.height / 2.0))!!
+                                assertEquals(3L, at.byteOffset)
+                                val screen = editor.caretRect(TextPosition(3L))!!
+                                assertEquals(screen, ink.area.visibleCaretBounds!!)
+                                val far = doc.lineRange(40L).start
+                                val measured = ink
+                                    .withLine(40L, frame) { off ->
+                                        off
+                                            .ink
+                                            .layout
+                                            .caret(off.display(TextPosition(far + 3L)))!!
+                                            .x
+                                    }
+                                assertTrue(measured > width * 1.5)
+                                assertEquals(0L, doc.version)
+                                normal = Some(row.ink)
+                                val before = ink.metricRevision
+                                background
+                                    .set(
+                                        [
+                                            CodeDecoration(
+                                                Utf8Range(1L, 7L),
+                                                CodeDecorationStyle(
+                                                    background = Some(Color(0.6, 0.8, 1.0))
+                                                )
+                                            )
+                                        ]
+                                    )
+                                assertEquals(before, ink.metricRevision)
+                            }
+
+                            case 2 -> {
+                                assertTrue(row.ink === normal!!)
+                                editor.setSelections([CodeSelection.offsets(7L, 1L)])
+                                assertEquals("WWW中", editor.selectedText())
+                                local.close()
+                                shared.close()
+                            }
+
+                            case 3 -> {
+                                assertEquals(height, row.height)
+                                assertEquals(width, caret.x)
+                                assertEquals(0L, doc.version)
+                                background.close()
+                                finished = true
+                                active.requestExit()
+                            }
+
+                            else -> {}
+                        }
+                        stage += 1
+                    }
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class FontView(val editor: CodeEditorState, scope: ComponentScope) : Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

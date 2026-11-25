@@ -13,7 +13,7 @@ internal class ShapedLine(
     val width: Double,
     val tabSize: Long,
     val fontsRevision: Long,
-    val runs: Array<ColorRun> = [],
+    val runs: Array<EditorStyleRun> = [],
     val suffix: String = ""
 ) {
     private var owners = 1L
@@ -41,7 +41,7 @@ internal class ShapedLine(
         wrap: Double,
         tab: Long,
         fontRevision: Long,
-        colors: Array<ColorRun>,
+        colors: Array<EditorStyleRun>,
         ending: String
     ): Boolean = source ==
         text &&

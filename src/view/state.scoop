@@ -25,7 +25,9 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     internal val widgets = ArrayList<EditorWidget>()
     internal var widgetId = 0L
     internal val widgetList = state<Array<EditorWidget>>([])
-    internal val decorationStore = DecorationStore(document) { mounted?.decorationChanged() }
+    internal val decorationStore = DecorationStore(document) { update ->
+        mounted?.decorationChanged(update)
+    }
     public fun decorations(): CodeDecorations = decorationStore.create()
     internal var mounted: EditorInk? = None
     internal var reveal: Utf8Range? = None

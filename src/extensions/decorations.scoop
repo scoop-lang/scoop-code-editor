@@ -3,13 +3,15 @@ package scoop.ui.editor
 import scoop.collections.*
 import scoop.comparisons.comparatorOf
 import scoop.graphics.Color
+import scoop.graphics.text.SpanStyle
 import scoop.window.Utf8Range
 
 public struct CodeDecorationStyle(
     val foreground: Color? = None,
     val background: Color? = None,
     val underline: Color? = None,
-    val gutter: Color? = None
+    val gutter: Color? = None,
+    val font: SpanStyle? = None
 )
 
 public struct CodeDecoration(
@@ -19,12 +21,56 @@ public struct CodeDecoration(
     val endBias: CodeStickiness = CodeStickiness.Before
 )
 
+internal enum DecorationUpdate {
+    Paint, Paragraph, Metrics
+}
+
+private fun decorationUpdate(values: List<CodeDecoration>): DecorationUpdate {
+    var update = DecorationUpdate.Paint
+    for (value in values) {
+        val style = value.style
+        when (val font = style.font) {
+            case Some(val f) -> {
+                if (f.families?.size !=
+                    None ||
+                    f.fontSize !=
+                    None ||
+                    f.weight !=
+                    None ||
+                    f.width !=
+                    None ||
+                    f.slant !=
+                    None ||
+                    f.locale !=
+                    None ||
+                    f.letterSpacing !=
+                    None ||
+                    f.wordSpacing !=
+                    None ||
+                    f.lineHeight !=
+                    None ||
+                    f.features?.size !=
+                    None ||
+                    f.variations?.size !=
+                    None
+                )
+                    return DecorationUpdate.Metrics
+                update = DecorationUpdate.Paragraph
+            }
+
+            case None -> if (style.foreground != None) update = DecorationUpdate.Paragraph
+        }
+    }
+    return update
+}
+
 private class IndexedDecoration(val value: CodeDecoration, val order: Long, var maximumEnd: Long)
 
 public class CodeDecorations internal constructor(private val store: DecorationStore) : Closeable {
     private var values: Array<CodeDecoration> = []
     private var sorted: Array<IndexedDecoration> = []
     private var closed = false
+    private var update = DecorationUpdate.Paint
 
     public fun set(decorations: List<CodeDecoration>) {
         if (closed) throw IllegalStateException(Some("decoration collection is closed"))
@@ -32,8 +78,18 @@ public class CodeDecorations internal constructor(private val store: DecorationS
             if (!validRange(store.doc.root, d.range))
                 throw IllegalArgumentException(Some("invalid decoration range"))
         }
+        val old = update
+        update = decorationUpdate(decorations)
         index(decorations.toArray())
-        store.changed()
+        store
+            .changed(
+                if (old == DecorationUpdate.Metrics || update == DecorationUpdate.Metrics)
+                    DecorationUpdate.Metrics
+                else if (old == DecorationUpdate.Paragraph || update == DecorationUpdate.Paragraph)
+                    DecorationUpdate.Paragraph
+                else
+                    DecorationUpdate.Paint
+            )
     }
 
     private fun index(next: Array<CodeDecoration>) {
@@ -97,11 +153,11 @@ public class CodeDecorations internal constructor(private val store: DecorationS
         closed = true
         values = []
         sorted = []
-        store.remove(this)
+        store.remove(this, update)
     }
 }
 
-internal class DecorationStore(val doc: CodeDocument, val changed: () -> Unit) {
+internal class DecorationStore(val doc: CodeDocument, val changed: (DecorationUpdate) -> Unit) {
     private val collections = ArrayList<CodeDecorations>()
     internal fun create(): CodeDecorations {
         val group = CodeDecorations(this);
@@ -116,11 +172,11 @@ internal class DecorationStore(val doc: CodeDocument, val changed: () -> Unit) {
         for (group in collections)
             group.collect(range, output)
     }
-    internal fun remove(group: CodeDecorations) {
+    internal fun remove(group: CodeDecorations, update: DecorationUpdate) {
         for (i in 0L..<collections.size) {
             if (collections[i] === group) {
                 collections.removeAt(i);
-                changed();
+                changed(update);
                 return
             }
         }

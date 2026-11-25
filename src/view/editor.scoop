@@ -22,9 +22,16 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
     internal var editor = contents.state
     internal val shortcutScope = scope.resource { ShortcutScope(scope.input) }
     internal var decorationRevision = 0L
-    internal fun decorationChanged() {
-        decorationRevision += 1L;
-        if (!ended && scope.isMounted) scope.requestLayout()
+    internal var metricRevision = 0L
+    internal fun decorationChanged(update: DecorationUpdate = DecorationUpdate.Paragraph) {
+        if (ended || !scope.isMounted) return
+        if (update == DecorationUpdate.Paint) {
+            scope.requestFrame();
+            return
+        }
+        decorationRevision += 1L
+        if (update == DecorationUpdate.Metrics) metricRevision += 1L
+        scope.requestLayout()
     }
     internal var input = EditorInputSession(editor)
     internal val viewport = scope.scrollViewport(editor.scroll)

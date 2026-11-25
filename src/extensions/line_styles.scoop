@@ -1,17 +1,48 @@
 package scoop.ui.editor
 
 import scoop.collections.*
+import scoop.comparisons.comparatorOf
 import scoop.graphics.Color
 import scoop.graphics.text.*
 import scoop.window.*
 
-internal struct ColorRun(val start: Long, val end: Long, val color: Color)
+internal fun hasRangeFont(font: SpanStyle?): Boolean = when (font) {
+    case Some(_) -> true;
+    case None -> false
+}
 
-internal fun sameRuns(a: Array<ColorRun>, b: Array<ColorRun>): Boolean {
+private struct RunEdge(val at: Long, val index: Long, val opening: Boolean)
+
+internal struct RunLayer(val font: SpanStyle?, val color: Color?)
+
+internal class EditorStyleRun(val start: Long, val end: Long, val layers: Array<RunLayer>)
+
+private fun sameLayers(a: Array<RunLayer>, b: Array<RunLayer>): Boolean {
     if (a.size != b.size) return false
     for (i in 0L..<a.size) {
-        if (a[i] != b[i]) return false
+        if (a[i].color != b[i].color) return false
+        when (val left = a[i].font) {
+            case Some(val f) -> {
+                val right = b[i].font ?: return false;
+                if (f !== right) return false
+            }
+
+            case None -> if (hasRangeFont(b[i].font)) return false
+        }
     }
+    return true
+}
+
+internal fun sameRuns(a: Array<EditorStyleRun>, b: Array<EditorStyleRun>): Boolean {
+    if (a.size != b.size) return false
+    for (i in 0L..<a.size)
+        if (a[i].start !=
+            b[i].start ||
+            a[i].end !=
+            b[i].end ||
+            !sameLayers(a[i].layers, b[i].layers)
+        )
+            return false
     return true
 }
 
@@ -32,47 +63,72 @@ internal fun EditorInk.decorationsFor(line: Utf8Range): Array<CodeDecoration> {
     }
 }
 
-internal fun foregroundRuns(line: Utf8Range, values: Array<CodeDecoration>): Array<ColorRun> {
-    val edges = ArrayList<Long>()
-    val candidates = ArrayList<CodeDecoration>()
-    for (d in values) {
-        if (d.style.foreground == None || d.range.start >= line.end || d.range.end <= line.start)
+internal fun textStyleRuns(line: Utf8Range, values: Array<CodeDecoration>): Array<EditorStyleRun> {
+    val edges = ArrayList<RunEdge>()
+    for (i in 0L..<values.size) {
+        val d = values[i]
+        if ((d.style.foreground == None && !hasRangeFont(d.style.font)) ||
+            d.range.start >=
+            line.end ||
+            d.range.end <=
+            line.start ||
+            d.range.start ==
+            d.range.end
+        )
             continue
-        candidates.add(d)
-        edges.add(if (d.range.start > line.start) d.range.start else line.start)
-        edges.add(if (d.range.end < line.end) d.range.end else line.end)
+        val a = if (d.range.start > line.start) d.range.start - line.start else 0L
+        val b = if (d.range.end < line.end) d.range.end - line.start else line.end - line.start
+        edges.add(RunEdge(a, i, true))
+        edges.add(RunEdge(b, i, false))
     }
-    edges.sort()
-    val runs = ArrayList<ColorRun>()
-    for (i in 1L..<edges.size) {
-        val a = edges[i - 1L]
-        val b = edges[i]
-        if (b <= a) continue
-        var color: Color? = None
-        for (d in candidates) {
-            if (d.range.start <= a && d.range.end >= b) color = d.style.foreground
-        }
-        when (color) {
-            case Some(val c) -> {
-                val last = runs.size - 1L
-                val start = a - line.start
-                val end = b - line.start
-                if (last >= 0L && runs[last].end == start && runs[last].color == c)
-                    runs[last] = ColorRun(runs[last].start, end, c)
-                else
-                    runs.add(ColorRun(start, end, c))
+    edges.sortWith(comparatorOf<RunEdge> { a, b -> a.at.compareTo(b.at) })
+    val active = ArrayList<Long>()
+    val runs = ArrayList<EditorStyleRun>()
+    var at = 0L
+    for (edge in edges) {
+        if (at < edge.at && active.size > 0L) {
+            val layers = Array<RunLayer>(active.size) { j ->
+                val style = values[active[j]].style
+                RunLayer(style.font, style.foreground)
             }
-
-            case None -> {}
+            val last = runs.size - 1L
+            if (last >= 0L && runs[last].end == at && sameLayers(runs[last].layers, layers))
+                runs[last] = EditorStyleRun(runs[last].start, edge.at, layers)
+            else
+                runs.add(EditorStyleRun(at, edge.at, layers))
         }
+        var i = 0L
+        while (i < active.size && active[i] < edge.index)
+            i += 1L
+        if (edge.opening) active.add(i, edge.index) else active.removeAt(i)
+        at = edge.at
     }
     return runs.toArray()
 }
 
-internal fun coloredLine(
+private fun styledRun(text: String, layers: Array<RunLayer>): TextSpan {
+    var nested = textSpan { this.text(text) }
+    var count = layers.size
+    while (count > 0L) {
+        count -= 1L
+        val child = nested
+        val layer = layers[count]
+        nested = textSpan {
+            when (val overrideStyle = layer.font) {
+                case Some(val font) -> style = font;
+                case None -> {}
+            }
+            if (layer.color != None) style { color = layer.color }
+            add(child)
+        }
+    }
+    return nested
+}
+
+internal fun styledLine(
     projection: LineProjection,
     base: TextStyle,
-    runs: Array<ColorRun>
+    runs: Array<EditorStyleRun>
 ): StyledText = styledText {
     style = base
     var at = 0L
@@ -80,11 +136,7 @@ internal fun coloredLine(
         val a = projection.displayOffset(run.start)
         val b = projection.displayOffset(run.end)
         if (at < a) text(projection.text.utf8Slice(Utf8Range(at, a)))
-        val part = projection.text.utf8Slice(Utf8Range(a, b))
-        span {
-            style { color = Some(run.color) };
-            text(part)
-        }
+        add(styledRun(projection.text.utf8Slice(Utf8Range(a, b)), run.layers))
         at = b
     }
     if (at < projection.text.byteLength || runs.size == 0L)

@@ -77,9 +77,9 @@ public class CodeDocument public constructor(text: String = "", language: CodeLa
                 view.mounted?.decorationChanged()
             }
         }
-    internal val decorationStore = DecorationStore(this) {
+    internal val decorationStore = DecorationStore(this) { update ->
         for (view in views)
-            view.mounted?.decorationChanged()
+            view.mounted?.decorationChanged(update)
     }
     public fun decorations(): CodeDecorations = decorationStore.create()
     internal val providedFolds = ArrayList<FoldAnchor>()
