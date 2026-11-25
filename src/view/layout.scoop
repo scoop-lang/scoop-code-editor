@@ -49,19 +49,11 @@ internal class CodeLayout(val ink: EditorInk) {
         runs: Array<ColorRun> = []
     ): ShapedLine {
         val fonts = ink.scope.defaultFonts
+        for (line in used) {
+            if (line.matches(source, style, wrap, tab, fonts.revision, runs)) return line.retain()
+        }
         for (line in cache) {
-            if (line.source ==
-                source &&
-                style ===
-                line.style &&
-                wrap ==
-                line.width &&
-                tab ==
-                line.tabSize &&
-                fonts.revision ==
-                line.fontsRevision &&
-                sameRuns(line.runs, runs)
-            ) {
+            if (line.matches(source, style, wrap, tab, fonts.revision, runs)) {
                 used.add(line.retain())
                 return line.retain()
             }

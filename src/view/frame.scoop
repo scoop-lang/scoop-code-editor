@@ -34,6 +34,25 @@ internal class ShapedLine(
             low
         return TextPosition(boundaries[index], affinity)
     }
+    internal fun matches(
+        text: String,
+        textStyle: TextStyle,
+        wrap: Double,
+        tab: Long,
+        fontRevision: Long,
+        colors: Array<ColorRun>
+    ): Boolean = source ==
+        text &&
+        style ===
+        textStyle &&
+        width ==
+        wrap &&
+        tabSize ==
+        tab &&
+        fontsRevision ==
+        fontRevision &&
+        sameRuns(runs, colors)
+
     internal fun retain(): ShapedLine {
         owners += 1L;
         return this

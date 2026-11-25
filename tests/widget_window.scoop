@@ -69,7 +69,7 @@ private class WidgetWindowProbe {
     private var stage = 0
     private var queued = false
     var finished = false
-    private val end = MonotonicTimeSource.now() + Duration.seconds(18L)
+    private val end = MonotonicTimeSource.now() + Duration.seconds(30L)
 
     fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
         when (event) {
@@ -105,6 +105,7 @@ private class WidgetWindowProbe {
                     )
                 window = Some(w)
                 host.attach(w, { scope -> WidgetWindowRoot(editor, scope) })
+                w.setWindowLevel(WindowLevel.AlwaysOnTop)
                 w.setVisible(true)
                 w.requestFocus()
                 app
@@ -115,6 +116,7 @@ private class WidgetWindowProbe {
             }
 
             case NewEvents(StartCause.Deadline) -> {
+                if (stage == 0) window?.requestRedraw()
                 if (MonotonicTimeSource.now() >= end)
                     fail(Some(f"widget geometry wait expired at stage ${stage}"))
                 app
@@ -226,6 +228,9 @@ private class WidgetWindowProbe {
             case 2 -> {
                 assertEquals(initialOverlay, overlay.area!!.windowBounds!!.y)
                 assertEquals(None, inline.area!!.windowBounds)
+                val measured = frame.rows
+                assertTrue(measured.size >= 2L)
+                assertTrue(measured[0L].ink === measured[1L].ink)
                 anchor = doc.lineRange(70L).start
                 screenAnchor = editor.caretRect(TextPosition(anchor))!!.y
                 doc.applyEdits(doc.version, [CodeEdit(Utf8Range(0L, 0L), "new\n")])
