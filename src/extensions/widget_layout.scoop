@@ -20,6 +20,7 @@ internal class WidgetLayout(
     val folds: FoldProjection
 ) {
     internal val zones = HashMap<Long, Double>()
+    internal val before = HashMap<Long, Double>()
     private val heights = HashMap<Long, Double>()
     private val lines = HashMap<Long, Long>()
     private val items = ink.contents.widgets
@@ -29,7 +30,7 @@ internal class WidgetLayout(
         for (i in 0L..<items.size) {
             val w = items[i]
             when (w.kind) {
-                case Zone -> {
+                case Zone(val side) -> {
                     val offset = ink.input.previewMap?.map(w.offset) ?: w.offset
                     val line = doc.positionAt(offset).line
                     if (folds.hidden(line)) continue
@@ -38,6 +39,8 @@ internal class WidgetLayout(
                     heights.put(i, measured.size.height)
                     lines.put(i, line)
                     zones.put(line, (zones[line] ?: 0.0) + measured.size.height)
+                    if (side == CodeZoneSide.Before)
+                        before.put(line, (before[line] ?: 0.0) + measured.size.height)
                 }
 
                 else -> {}
@@ -45,25 +48,48 @@ internal class WidgetLayout(
         }
     }
 
+    private fun placeChild(frame: EditorFrame, index: Long, rect: Rect) {
+        context.placeChild(index, Point(rect.x, rect.y))
+        if (rect.y +
+            rect.height >
+            0.0 &&
+            rect.y <
+            size.height &&
+            rect.x +
+            rect.width >
+            0.0 &&
+            rect.x <
+            size.width
+        )
+            frame.placedWidgets.add(PositionedWidget(items[index], rect))
+    }
+
     internal fun place(frame: EditorFrame, index: ItemExtentIndex) {
-        val placed = HashMap<Long, Double>()
+        val placedBefore = HashMap<Long, Double>()
+        val placedAfter = HashMap<Long, Double>()
         for (i in 0L..<items.size) {
             val widget = items[i]
             when (widget.kind) {
-                case Zone -> {
+                case Zone(val side) -> {
                     val line = lines[i]
                     if (line == None) {
                         context.skipChild(i);
                         continue
                     }
                     val logical = line!!
-                    val above = placed[logical] ?: 0.0
-                    val y = index.prefix(folds.index(logical) + 1L) -
-                        (zones[logical] ?: 0.0) +
-                        above -
-                        frame.origin.y
-                    context.placeChild(i, Point(gutter, y))
-                    placed.put(logical, above + (heights[i] ?: 0.0))
+                    val placed = if (side == CodeZoneSide.Before) placedBefore else placedAfter
+                    val extent = heights[i] ?: 0.0
+                    val consumed = placed[logical] ?: 0.0
+                    val indexInView = folds.index(logical)
+                    val top = if (side == CodeZoneSide.Before)
+                        index.prefix(indexInView)
+                    else
+                        index.prefix(indexInView + 1L) -
+                            (zones[logical] ?: 0.0) +
+                            (before[logical] ?: 0.0)
+                    val y = top + consumed - frame.origin.y
+                    placeChild(frame, i, Rect(gutter, y, body, extent))
+                    placed.put(logical, consumed + extent)
                 }
 
                 case Content -> {
@@ -89,7 +115,16 @@ internal class WidgetLayout(
                                 rect.y + rect.height
                             else
                                 rect.y - metrics.size.height
-                            context.placeChild(i, Point(x, if (y > 0.0) y else 0.0))
+                            placeChild(
+                                frame,
+                                i,
+                                Rect(
+                                    x,
+                                    if (y > 0.0) y else 0.0,
+                                    metrics.size.width,
+                                    metrics.size.height
+                                )
+                            )
                         }
                     }
                 }
@@ -116,7 +151,7 @@ internal class WidgetLayout(
                         size.height - metrics.size.height
                     else
                         0.0
-                    context.placeChild(i, Point(x, y))
+                    placeChild(frame, i, Rect(x, y, metrics.size.width, metrics.size.height))
                 }
             }
         }

@@ -27,6 +27,7 @@ internal class CodeLayout(val ink: EditorInk) {
     private var revision = -1L
     private var fontRevision = -1L
     private var previousZones = HashMap<Long, Double>()
+    private var previousBefore = HashMap<Long, Double>()
     private var maximumWidth = 0.0
     internal var anchor: ReadingAnchor? = None
     private var cache = ArrayList<ShapedLine>()
@@ -137,12 +138,16 @@ internal class CodeLayout(val ink: EditorInk) {
             state.reveal ==
             None &&
             !ink.input.composing &&
+            state.scroll.offset.y >
+            0.0 &&
             previousFrame?.document?.version ==
             Some(doc.version) &&
             previousFrame!!.scrollRevision ==
             state.scroll.requestRevision &&
             (
-                metricRevision !=
+                !sameZoneHeights(previousZones, widgets.zones) ||
+                    !sameZoneHeights(previousBefore, widgets.before) ||
+                    metricRevision !=
                     ink.metricRevision ||
                     foldRevision !=
                     state.folding.revision ||
@@ -215,6 +220,7 @@ internal class CodeLayout(val ink: EditorInk) {
         foldRevision = state.folding.revision
         metricRevision = ink.metricRevision
         previousZones = widgets.zones
+        previousBefore = widgets.before
         version = doc.version
         revision = ink.input.state.revision
         options = Some(opt)
@@ -254,7 +260,9 @@ internal class CodeLayout(val ink: EditorInk) {
                     val local = if (offset > r.end) r.end - r.start else offset - r.start
                     withinAnchor = (body.layout.caret(body.display(local, a.affinity))?.y ?: 0.0) -
                         a.screenY
-                    y = index.prefix(folds.index(anchorLine)) + withinAnchor
+                    y = index.prefix(folds.index(anchorLine)) +
+                        (widgets.before[anchorLine] ?: 0.0) +
+                        withinAnchor
                     adjustment = Some(
                         ScrollAdjustment(a.request, Point(x, if (y > 0.0) y else 0.0))
                     )
@@ -283,7 +291,9 @@ internal class CodeLayout(val ink: EditorInk) {
                         val caret = body
                             .layout
                             .caret(body.display(local))
-                        val top = index.prefix(folds.index(line)) + (caret?.y ?: 0.0)
+                        val top = index.prefix(folds.index(line)) +
+                            (widgets.before[line] ?: 0.0) +
+                            (caret?.y ?: 0.0)
                         val bottom = top + (caret?.height ?: h)
                         if (state.centerReveal)
                             y = (top + bottom - size.height) / 2.0
@@ -336,13 +346,26 @@ internal class CodeLayout(val ink: EditorInk) {
                 val original = ink.input.reverseMap?.map(r.start) ?: r.start
                 val header = opt.foldingControls &&
                     state.folding.header(state.document.positionAt(original).line)
-                rows.add(ScreenRow(line, r, body, label, index.prefix(visual), h, header))
+                rows
+                    .add(
+                        ScreenRow(
+                            line,
+                            r,
+                            body,
+                            label,
+                            index.prefix(visual) + (widgets.before[line] ?: 0.0),
+                            h,
+                            header
+                        )
+                    )
                 val measured = body.layout.size.width + gutter + 4.0
                 if (measured > maximumWidth) maximumWidth = measured
                 visual += 1L
             }
             if (anchorLine >= 0L) {
-                val corrected = index.prefix(folds.index(anchorLine)) + withinAnchor
+                val corrected = index.prefix(folds.index(anchorLine)) +
+                    (widgets.before[anchorLine] ?: 0.0) +
+                    withinAnchor
                 adjustment = Some(
                     ScrollAdjustment(
                         scroll.requestRevision,
@@ -382,4 +405,11 @@ internal class CodeLayout(val ink: EditorInk) {
             cache = used
         }
     }
+}
+
+private fun sameZoneHeights(a: HashMap<Long, Double>, b: HashMap<Long, Double>): Boolean {
+    if (a.size != b.size) return false
+    for (item in a)
+        if (b[item.key] != Some(item.value)) return false
+    return true
 }

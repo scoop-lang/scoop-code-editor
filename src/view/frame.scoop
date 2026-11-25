@@ -101,6 +101,7 @@ internal class EditorFrame(
     val foldRevision: Long
 ) {
     private var owners = 1L
+    internal val placedWidgets = ArrayList<PositionedWidget>()
     internal val origin: Point get() = scroll.presentationOffset
     internal fun retain(): EditorFrame {
         owners += 1L;

@@ -33,7 +33,7 @@ class SplitEditor(scope: ComponentScope) : Component(scope) {
 }
 ```
 
-文档可以脱离窗口使用。`document.applyEdits` 接受同一版本的一批 UTF-8 字节范围替换。视图操作通过 `executeEdits` 加入同一份撤销历史。宿主也可以登记动作、设置范围装饰，或安装跟随文档位置的控件和占据实际行高的批注。详见[公开接口约定](docs/SPEC.md)和[设计](docs/DESIGN.md)。
+文档可以脱离窗口使用。`document.applyEdits` 接受同一版本的一批 UTF-8 字节范围替换。视图操作通过 `executeEdits` 加入同一份撤销历史。宿主也可以登记动作、设置范围装饰，或安装跟随文档位置的控件、行前／行后批注，以及按需解析的 CodeLens 按钮。详见[公开接口约定](docs/SPEC.md)和[设计](docs/DESIGN.md)。
 
 ## 本地验证
 

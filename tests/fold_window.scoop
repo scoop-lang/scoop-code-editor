@@ -31,6 +31,11 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
     val doc = CodeDocument("outer\n  nested\n    body\n  peer\nafter\nend")
     val left = CodeEditorState(doc)
     val right = CodeEditorState(doc)
+    private val lens = left.codeLenses()
+    init {
+        val action = CodeLensContent.Ready(CodeLensAction("Body") { _ -> })
+        lens.set(doc.version, [CodeLens(doc.lineRange(2L), action)])
+    }
     private var window: Window? = None
     private var stage = 0
     private var queued = false
@@ -86,12 +91,14 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
                             case 0 -> {
                                 val head = frame.rowAt(TextPosition(0L))!!
                                 assertTrue(head.foldHeader)
+                                assertEquals(1L, frame.placedWidgets.size)
                                 click(8.0, head.top - frame.origin.y + head.height / 2.0)
                             }
 
                             case 1 -> {
                                 if (!frame.folds.hidden(2L)) return@post
                                 assertFalse(peer.folds.hidden(2L))
+                                assertEquals(0L, frame.placedWidgets.size)
                                 assertEquals(2L, left.visibleRanges().size)
                                 assertTrue(
                                     left.caretRect(TextPosition(doc.lineRange(2L).start)) == None
@@ -111,6 +118,8 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
 
                             case 2 -> {
                                 assertTrue(frame.folds.hidden(4L))
+                                assertEquals(3L, doc.positionAt(lens.entries[0L].start).line)
+                                assertEquals(0L, frame.placedWidgets.size)
                                 assertEquals(5L, frame.folds.line(1L))
                                 assertFalse(peer.folds.hidden(4L))
                                 val head = frame.rows[0L]
@@ -139,6 +148,11 @@ private class FoldWindow(val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int,
                                 assertEquals(0L, left.folding.collapsedRanges().size)
                                 assertTrue(left.caretRect(left.selections.primary.cursor) != None)
                                 assertEquals(0L, right.folding.collapsedRanges().size)
+                                assertEquals(1L, frame.placedWidgets.size)
+                                assertEquals(
+                                    3L,
+                                    doc.positionAt(frame.placedWidgets[0L].widget.offset).line
+                                )
                                 finished = true
                                 active.requestExit()
                             }

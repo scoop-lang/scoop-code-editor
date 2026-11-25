@@ -272,6 +272,7 @@ internal class EditorInk(private val props: Props<EditorContents>, scope: Compon
                     accepted?.release()
                     accepted = Some(retained)
                     owner.refreshMenuStatus()
+                    owner.lensStore.presented(this, retained)
                     continueDragAfterFrame()
                     if (owner.focusAfterLayout) {
                         owner.focusAfterLayout = false

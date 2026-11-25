@@ -1,0 +1,258 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.window.Utf8Range
+
+public class CodeLensAction public constructor(
+    public val title: String,
+    public val run: (CodeEditorState) -> Unit
+)
+
+public enum CodeLensContent {
+    Ready(val action: CodeLensAction), Deferred(
+        val label: String,
+        val resolve: (CodeSnapshot) -> CodeLensAction?
+    )
+}
+
+public struct CodeLens(val range: Utf8Range, val content: CodeLensContent)
+
+public class CodeLenses internal constructor(private val store: LensStore) : Closeable {
+    internal var entries: Array<LensEntry> = []
+    internal var active = true
+
+    public fun set(version: Long, lenses: List<CodeLens>): Boolean {
+        if (!active) throw IllegalStateException(Some("CodeLens collection is closed"))
+        val doc = store.editor.document
+        if (doc.version != version) return false
+        for (lens in lenses)
+            if (!validRange(doc.root, lens.range))
+                throw IllegalArgumentException(Some("invalid CodeLens range"))
+        for (entry in entries)
+            entry.live = false
+        entries = Array<LensEntry>(lenses.size) { i -> LensEntry(lenses[i]) }
+        store.regroup()
+        return true
+    }
+    public override fun close() {
+        if (!active) return
+        active = false
+        for (entry in entries)
+            entry.live = false
+        entries = []
+        store.remove(this)
+    }
+}
+
+internal class LensEntry(lens: CodeLens) {
+    internal var start = lens.range.start
+    internal var end = lens.range.end
+    internal val content = lens.content
+    internal val focus = FocusHandle()
+    internal var group: EditorWidget? = None
+    internal var live = true
+    internal var resolvedAt = -1L
+    internal val action = state<CodeLensAction?>(
+        when (val c = content) {
+            case Ready(val a) -> Some(a)
+            case Deferred(_, _) -> None
+        }
+    )
+    internal fun pending(version: Long): Boolean = live &&
+        resolvedAt !=
+        version &&
+        when (content) {
+            case Deferred(_, _) -> true
+            case Ready(_) -> false
+        }
+    internal fun map(mapping: CodeEditMap) {
+        start = mapping.map(start)
+        val b = mapping.map(end, CodeStickiness.Before)
+        end = if (b < start) start else b
+        if (resolvedAt >= 0L) {
+            resolvedAt = -1L
+            action.value = None
+        }
+    }
+}
+
+internal class LensStore(val editor: CodeEditorState) {
+    private val sources = ArrayList<CodeLenses>()
+    private var rows = ArrayList<EditorWidget>()
+    private var scheduled = false
+
+    internal fun create(): CodeLenses {
+        if (editor.closed) throw IllegalStateException(Some("editor is closed"))
+        val result = CodeLenses(this)
+        sources.add(result)
+        return result
+    }
+    internal fun map(mapping: CodeEditMap) {
+        if (rows.size == 0L) return
+        for (source in sources)
+            for (entry in source.entries)
+                entry.map(mapping)
+        regroup()
+    }
+    internal fun regroup() {
+        val lines = HashMap<Long, ArrayList<LensEntry>>()
+        for (source in sources)
+            for (entry in source.entries) {
+                val line = editor.document.positionAt(entry.start).line
+                val group = lines.getOrPut(line) { ArrayList<LensEntry>() }
+                group.add(entry)
+            }
+        var changed = false
+        val kept = HashSet<Long>()
+        val next = ArrayList<EditorWidget>()
+        for (line in lines) {
+            val values = line.value
+            val anchor = editor.document.lineRange(line.key).start
+            val existing = values[0L].group
+            if (sameLensRow(existing, values)) {
+                val widget = existing!!
+                widget.offset = anchor
+                kept.add(widget.id)
+                next.add(widget)
+            } else {
+                val entries = values.toArray()
+                val view = component({ scope -> LensButtons(editor, entries, scope) })
+                val widget = editor
+                    .attachWidget(EditorWidgetKind.Zone(CodeZoneSide.Before), anchor, view, entries)
+                for (entry in entries)
+                    entry.group = Some(widget)
+                next.add(widget)
+                changed = true
+            }
+        }
+        for (widget in rows)
+            if (!kept.contains(widget.id)) {
+                editor.detachWidget(widget)
+                changed = true
+            }
+        rows = next
+        if (changed) editor.widgetList.value = editor.widgets.toArray()
+    }
+    internal fun remove(source: CodeLenses) {
+        for (i in 0L..<sources.size)
+            if (sources[i] === source) {
+                sources.removeAt(i)
+                break
+            }
+        if (!editor.closed) regroup()
+    }
+    internal fun close() {
+        for (source in sources.toArray())
+            source.close()
+        rows.clear()
+    }
+    internal fun hasVisibleAction(): Boolean = visibleAction()?.live ?: false
+    internal fun focusVisible(): Boolean = visibleAction()?.focus?.requestFocus() ?: false
+    private fun visibleAction(): LensEntry? {
+        if (rows.size == 0L) return None
+        val ink = editor.mounted ?: return None
+        val frame = ink.currentFrame() ?: return None
+        val current = editor.document.positionAt(editor.selections.primary.cursor.byteOffset).line
+        var best: LensEntry? = None
+        var distance = Long.MAX_VALUE
+        for (item in frame.placedWidgets)
+            for (entry in item.widget.lenses) {
+                if (!entry.live || entry.action.value?.title == None) continue
+                val line = editor.document.positionAt(entry.start).line
+                val delta = if (line > current) line - current else current - line
+                if (delta < distance) {
+                    best = Some(entry)
+                    distance = delta
+                }
+            }
+        return best
+    }
+    internal fun presented(ink: EditorInk, frame: EditorFrame) {
+        if (scheduled || rows.size == 0L) return
+        for (placed in frame.placedWidgets)
+            for (entry in placed.widget.lenses) {
+                if (!entry.pending(frame.document.version)) continue
+                scheduled = true
+                ink
+                    .scope
+                    .application
+                    .proxy()
+                    .post { _ ->
+                        scheduled = false
+                        when (val current = ink.currentFrame()) {
+                            case Some(val value) -> resolve(value)
+                            case None -> {}
+                        }
+                    }
+                return
+            }
+    }
+    private fun resolve(frame: EditorFrame) {
+        val doc = editor.document
+        val version = frame.document.version
+        val snapshot = doc.snapshot()
+        var changed = false
+        for (placed in frame.placedWidgets)
+            for (entry in placed.widget.lenses) {
+                if (!entry.pending(version) || version != doc.version) continue
+                when (val contribution = entry.content) {
+                    case Deferred(_, val provide) -> {
+                        entry.resolvedAt = version
+                        val action = provide(snapshot)
+                        if (entry.live && !editor.closed && version == doc.version) {
+                            entry.action.value = action
+                            changed = true
+                        }
+                    }
+
+                    case Ready(_) -> {}
+                }
+            }
+        if (changed) editor.remeasureWidgets()
+    }
+}
+
+private fun sameLensRow(widget: EditorWidget?, values: List<LensEntry>): Boolean {
+    val row = widget ?: return false
+    if (row.lenses.size != values.size) return false
+    for (i in 0L..<values.size)
+        if (row.lenses[i] !== values[i]) return false
+    return true
+}
+
+private class LensButtons(
+    val editor: CodeEditorState,
+    val values: Array<LensEntry>,
+    scope: ComponentScope
+) : Component(scope) {
+    public override fun onMount() {
+        scope.panelEscape({ true }) { editor.requestFocus() }
+    }
+    public override fun render(): View {
+        val source = Some(editor.uiTheme())
+        val entries = values
+        val owner = editor
+        return row {
+            for (entry in entries) {
+                val action = entry.action.value
+                val title = action?.title ?:
+                    when (val data = entry.content) {
+                        case Ready(val a) -> a.title
+                        case Deferred(val label, _) -> label
+                    }
+                button(
+                    title,
+                    { if (entry.live && !owner.closed) entry.action.value?.run?.invoke(owner) }
+                ) {
+                    enabled = action?.title != None
+                    focus = FocusOptions(handle = Some(entry.focus))
+                    size = ButtonSize.Xs
+                    variant = ButtonVariant.Link
+                    theme = source
+                }
+            }
+        }
+    }
+}

@@ -7,33 +7,55 @@ public enum CodeEditorCorner {
     TopLeft, TopRight, BottomLeft, BottomRight
 }
 
+public enum CodeZoneSide {
+    Before, After
+}
+
 internal enum EditorWidgetKind {
-    Content, Zone, Overlay(CodeEditorCorner)
+    Content, Zone(val side: CodeZoneSide), Overlay(CodeEditorCorner)
 }
 
 internal class EditorWidget(
     val kind: EditorWidgetKind,
     var offset: Long,
     val view: View,
-    val id: Long
+    val id: Long,
+    val lenses: Array<LensEntry> = []
 )
 
-private fun CodeEditorState.addWidget(kind: EditorWidgetKind, offset: Long, view: View): Closeable {
+internal fun CodeEditorState.attachWidget(
+    kind: EditorWidgetKind,
+    offset: Long,
+    view: View,
+    lenses: Array<LensEntry> = []
+): EditorWidget {
     if (closed || !scalarBoundary(document.root, offset))
         throw IllegalArgumentException(Some("invalid widget anchor or closed editor"))
     widgetId += 1L
-    val widget = EditorWidget(kind, offset, view, widgetId)
+    val widget = EditorWidget(kind, offset, view, widgetId, lenses)
     widgets.add(widget)
+    return widget
+}
+
+internal fun CodeEditorState.detachWidget(widget: EditorWidget) {
+    for (i in 0L..<widgets.size)
+        if (widgets[i] === widget) {
+            widgets.removeAt(i)
+            return
+        }
+}
+
+private fun CodeEditorState.addWidget(kind: EditorWidgetKind, offset: Long, view: View): Closeable {
+    val widget = attachWidget(kind, offset, view)
     widgetList.value = widgets.toArray()
     return EditorRegistration {
-        for (i in 0L..<widgets.size) {
-            if (widgets[i] === widget) {
-                widgets.removeAt(i);
-                break
-            }
-        }
+        detachWidget(widget)
         widgetList.value = widgets.toArray()
     }
+}
+
+public fun CodeEditorState.remeasureWidgets() {
+    if (!closed) widgetList.value = widgets.toArray()
 }
 
 public fun CodeEditorState.addContentWidget(position: Long, view: View): Closeable = addWidget(
@@ -45,17 +67,34 @@ public fun CodeEditorState.addContentWidget(position: Long, view: View): Closeab
 public fun CodeEditorState.addOverlayWidget(corner: CodeEditorCorner, view: View): Closeable =
     addWidget(EditorWidgetKind.Overlay(corner), 0L, view)
 
-public fun CodeEditorState.addViewZone(afterLine: Long, view: View): Closeable = addWidget(
-    EditorWidgetKind.Zone,
-    document.lineRange(afterLine).end,
+public fun CodeEditorState.addViewZone(afterLine: Long, view: View): Closeable = addViewZone(
+    afterLine,
+    CodeZoneSide.After,
     view
 )
+
+public fun CodeEditorState.addViewZone(line: Long, side: CodeZoneSide, view: View): Closeable {
+    val range = document.lineRange(line)
+    return addWidget(
+        EditorWidgetKind.Zone(side),
+        if (side == CodeZoneSide.Before) range.start else range.end,
+        view
+    )
+}
 
 internal fun CodeEditorState.mapWidgets(mapping: CodeEditMap) {
     for (widget in widgets) {
         when (widget.kind) {
             case Content -> widget.offset = mapping.map(widget.offset)
-            case Zone -> widget.offset = mapping.map(widget.offset, CodeStickiness.Before)
+            case Zone(val side) ->
+                widget.offset = mapping
+                    .map(
+                        widget.offset,
+                        if (side == CodeZoneSide.Before)
+                            CodeStickiness.After
+                        else
+                            CodeStickiness.Before
+                    )
             case Overlay(_) -> {}
         }
     }

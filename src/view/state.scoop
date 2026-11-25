@@ -22,6 +22,8 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
     internal var menuStatus = -1
     internal var activeFind: CodeFind? = None
     public val find: CodeFind get() = activeFind ?: CodeFind(this)
+    internal val lensStore = LensStore(this)
+    public fun codeLenses(): CodeLenses = lensStore.create()
     internal val widgets = ArrayList<EditorWidget>()
     internal var widgetId = 0L
     internal val widgetList = state<Array<EditorWidget>>([])
@@ -108,6 +110,11 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         installViewActions()
         installCodeActions()
         installFoldActions()
+        addAction(
+            "lens.focus",
+            "Focus visible CodeLens",
+            enabled = { e -> e.lensStore.hasVisibleAction() }
+        ) { e -> e.lensStore.focusVisible() }
     }
 
     public fun onSelectionChange(listener: (CodeSelections) -> Unit): Closeable = selectionEvents
@@ -154,6 +161,7 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         gotoPanel = None
         actions.clear()
         decorationStore.close()
+        lensStore.close()
         widgets.clear()
         widgetList.value = []
         selectionEvents.clear()

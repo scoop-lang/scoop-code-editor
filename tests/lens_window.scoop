@@ -1,0 +1,219 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+import scoop.window.native.*
+
+@Test
+private class LensWindowTests {
+    @Ignore("Run validation/appkit.sh on macOS")
+    @Test(useProcess = true)
+    fun firstLineLensReceivesMouseAndKeyboardAndOffscreenLensResolvesOnReveal() {
+        withEditorProbe("scoop_editor_appkit_navigation") { key ->
+            withEditorMouse { mouse ->
+                val probe = LensWindow(mouse, key)
+                UiHost(
+                    onRootError = { _, e -> throw e },
+                    handler = { host, app, event -> probe.event(host, app, event) }
+                )
+                    .use { host -> Application().run(host) }
+                assertTrue(probe.finished)
+            }
+        }
+    }
+}
+
+private class LensWindow(
+    val mouse: FunPtr<(Ptr<Unit>, Int, Double, Double, Int, Int) -> Unit>,
+    val key: FunPtr<(Ptr<Unit>?, Int) -> Int>
+) {
+    private val source = "fun hello()\n" + "  call()\n".repeat(75L)
+    private val doc = CodeDocument(source)
+    val editor = CodeEditorState(doc)
+    private val set = editor.codeLenses()
+    private var window: Window? = None
+    private var calls = 0
+    private var resolves = 0
+    private var stage = 0
+    private var queued = false
+    private val end = MonotonicTimeSource.now() + Duration.seconds(18L)
+    var finished = false
+    init {
+        val first = CodeLensContent.Ready(CodeLensAction("Run") { _ -> calls += 1 })
+        val second = CodeLensContent.Ready(CodeLensAction("Tests") { _ -> calls += 10 })
+        val far = CodeLensContent
+            .Deferred("References") { snap ->
+                assertEquals(doc.version, snap.version)
+                resolves += 1
+                Some(CodeLensAction("3 references") { _ -> calls += 100 })
+            }
+        set
+            .set(
+                doc.version,
+                [
+                    CodeLens(Utf8Range(4L, 9L), first),
+                    CodeLens(Utf8Range(0L, 3L), second),
+                    CodeLens(doc.lineRange(60L), far)
+                ]
+            )
+    }
+    private fun point(x: Double, y: Double): Point {
+        val r = editor.mounted!!.area.toWindow(Rect(x, y, 1.0, 1.0))!!
+        return Point(r.x, r.y)
+    }
+    private fun send(phase: Int, p: Point = Point(0.0, 0.0)) {
+        @Unsafe {
+            val lease = window!!.acquireNativeWindow()
+            try {
+                when (lease.handle) {
+                    case AppKit(_, val v) -> {
+                        if (phase == 0) {
+                            mouse(v, 0, p.x, p.y, 1, 0)
+                            mouse(v, 2, p.x, p.y, 1, 0)
+                        } else
+                            key(Some(v), phase)
+                    }
+                }
+            } finally {
+                lease.close()
+            }
+        }
+    }
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Native CodeLens";
+                            size = LogicalSize(360.0, 160.0)
+                        }
+                    )
+                window = Some(w)
+                host.attach(w, { scope -> LensWindowRoot(editor, scope) })
+                w.requestFocus()
+                app.setControlFlow(ControlFlow.WaitUntil(end))
+            }
+
+            case NewEvents(StartCause.Deadline) ->
+                fail(
+                    Some(
+                        f"CodeLens window stage ${stage}, actions ${calls}, resolutions ${resolves}"
+                    )
+                )
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                if (ink.currentFrame()?.rows?.size == None) return
+                if (queued || finished || window?.isFocused != Some(true)) return
+                queued = true
+                app
+                    .proxy()
+                    .post { active ->
+                        queued = false
+                        val frame = ink.currentFrame() ?: return@post
+                        when (stage) {
+                            case 0 -> {
+                                val row = frame.rows[0L]
+                                val lens = frame.placedWidgets[0L]
+                                assertEquals(2L, lens.widget.lenses.size)
+                                assertTrue(row.top >= lens.bounds.y + lens.bounds.height)
+                                assertEquals(0, resolves)
+                                val p = point(
+                                    lens.bounds.x + 15.0,
+                                    lens.bounds.y + lens.bounds.height / 2.0
+                                )
+                                when (val target = editor.hitTest(p)!!) {
+                                    case LineWidget(val line, val side, _) -> {
+                                        assertEquals(0L, line);
+                                        assertEquals(CodeZoneSide.Before, side)
+                                    }
+
+                                    else -> fail(Some("first-line CodeLens failed hit testing"))
+                                }
+                                val c = editor.caretRect(TextPosition(4L))!!
+                                when (val target = editor
+                                    .hitTest(Point(c.x + 0.1, c.y + c.height / 2.0))!!
+                                ) {
+                                    case Text(val pos) -> assertEquals(4L, pos.byteOffset)
+                                    else -> fail(Some("body failed hit testing"))
+                                }
+                                when (val target = editor
+                                    .hitTest(
+                                        point(frame.gutter - 2.0, row.top + row.height / 2.0)
+                                    )!!
+                                ) {
+                                    case Gutter(val line) -> assertEquals(0L, line)
+                                    else -> fail(Some("gutter failed hit testing"))
+                                }
+                                send(0, p)
+                            }
+
+                            case 1 -> {
+                                if (calls != 1) return@post
+                                assertTrue(editor.runAction("lens.focus"))
+                            }
+
+                            case 2 -> {
+                                if (!set.entries[0L].focus.isFocusActive) return@post
+                                send(2)
+                            }
+
+                            case 3 -> {
+                                if (calls != 2) return@post
+                                send(3)
+                            }
+
+                            case 4 -> {
+                                if (!editor.hasFocus) return@post
+                                assertEquals(0, resolves)
+                                assertEquals(source, doc.read(Utf8Range(0L, doc.byteLength)))
+                                editor.revealRange(doc.lineRange(60L), true)
+                            }
+
+                            case 5 -> {
+                                if (resolves == 0) return@post
+                                assertEquals(1, resolves)
+                                assertEquals("3 references", set.entries[2L].action.value!!.title)
+                                assertEquals(1L, frame.placedWidgets.size)
+                                assertTrue(editor.runAction("lens.focus"))
+                            }
+
+                            case 6 -> {
+                                if (!set.entries[2L].focus.isFocusActive) return@post
+                                send(2)
+                            }
+
+                            case 7 -> {
+                                if (calls != 102) return@post
+                                assertEquals(0L, doc.version)
+                                set.close()
+                            }
+
+                            case 8 -> {
+                                assertEquals(0L, frame.placedWidgets.size)
+                                finished = true
+                                active.requestExit()
+                            }
+
+                            else -> {}
+                        }
+                        stage += 1
+                    }
+            }
+
+            else -> {}
+        }
+    }
+}
+
+private class LensWindowRoot(val editor: CodeEditorState, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

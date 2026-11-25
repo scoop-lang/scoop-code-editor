@@ -1,0 +1,41 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+
+@Test
+private class CodeLensTests {
+    @Test
+    fun independentContributionsRegroupWhenEditsSplitAndJoinTheAnchoredLine() {
+        val doc = CodeDocument("ab cd\ne")
+        val view = CodeEditorState(doc)
+        val peer = CodeEditorState(doc)
+        val first = view.codeLenses()
+        val second = view.codeLenses()
+        val run = CodeLensContent.Ready(CodeLensAction("Run") { _ -> })
+        assertTrue(first.set(0L, [CodeLens(Utf8Range(0L, 2L), run)]))
+        assertTrue(second.set(0L, [CodeLens(Utf8Range(3L, 5L), run)]))
+        assertEquals(1L, view.widgets.size)
+        assertEquals(2L, view.widgets[0L].lenses.size)
+        assertEquals(0L, peer.widgets.size)
+        assertEquals(
+            CodeEditResult.Applied,
+            peer.executeEdits(0L, [CodeEdit(Utf8Range(3L, 3L), "\r\n")])
+        )
+        assertEquals(2L, view.widgets.size)
+        assertEquals(5L, second.entries[0L].start)
+        assertFalse(second.set(0L, []))
+        assertEquals(1L, second.entries.size)
+        assertEquals(CodeEditResult.Applied, peer.undo())
+        assertEquals(1L, view.widgets.size)
+        assertTrue(view.widgets[0L].lenses[1L] === second.entries[0L])
+        first.close()
+        assertEquals(1L, view.widgets.size)
+        assertEquals(1L, view.widgets[0L].lenses.size)
+        assertTrue(second.set(doc.version, []))
+        assertEquals(0L, view.widgets.size)
+        second.close()
+        view.close()
+        peer.close()
+    }
+}

@@ -1,0 +1,56 @@
+package scoop.ui.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.TextPosition
+import scoop.ui.View
+
+public enum CodeHitTarget {
+    Text(val position: TextPosition), Gutter(val line: Long), FoldControl(val line: Long),
+    ContentWidget(val offset: Long, val view: View), OverlayWidget(val view: View),
+    LineWidget(val line: Long, val side: CodeZoneSide, val view: View)
+}
+
+internal class PositionedWidget(val widget: EditorWidget, val bounds: Rect)
+
+public fun CodeEditorState.hitTest(windowPoint: Point): CodeHitTarget? {
+    val ink = mounted ?: return None
+    val frame = ink.currentFrame() ?: return None
+    val point = ink.area.toLocal(windowPoint) ?: return None
+    if (point.x <
+        0.0 ||
+        point.y <
+        0.0 ||
+        point.x >=
+        frame.size.width ||
+        point.y >=
+        frame.size.height
+    )
+        return None
+    var i = frame.placedWidgets.size
+    while (i > 0L) {
+        i -= 1L
+        val placed = frame.placedWidgets[i]
+        val r = placed.bounds
+        if (point.x < r.x || point.y < r.y || point.x >= r.x + r.width || point.y >= r.y + r.height)
+            continue
+        val w = placed.widget
+        return Some(
+            when (w.kind) {
+                case Content -> CodeHitTarget.ContentWidget(w.offset, w.view)
+                case Overlay(_) -> CodeHitTarget.OverlayWidget(w.view)
+                case Zone(val side) ->
+                    CodeHitTarget.LineWidget(document.positionAt(w.offset).line, side, w.view)
+            }
+        )
+    }
+    val pos = frame.hit(point) ?: return None
+    val fold = frame.foldTarget(point)
+    if (fold != None)
+        return Some(CodeHitTarget.FoldControl(document.positionAt(pos.byteOffset).line))
+    return Some(
+        if (point.x < frame.gutter)
+            CodeHitTarget.Gutter(document.positionAt(pos.byteOffset).line)
+        else
+            CodeHitTarget.Text(pos)
+    )
+}
