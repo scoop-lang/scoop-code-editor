@@ -34,6 +34,17 @@ Monaco 的 `cursorColumnSelectDown` 向下扩展列选，`editor.action.insertCu
 | 括号与折叠 | 跳转／选择至配对括号，手动设置与移除折叠区，当前、递归、全部折叠／展开 | 移除匹配的括号对、按嵌套深度给括号着色、跳到父折叠／相邻折叠、按级别或标记折叠。[括号命令][brackets] · [折叠命令][folds] · [编辑器选项][options] |
 | 滚动与导航 | 翻页移动光标，独立按行／页滚动视口，转到行列并定位，恢复阅读位置 | 水平步进滚动、只把视口移到文档顶端／底端。这些动作可共享同一滚动状态。[核心命令][core] |
 
+### 同一条命令在不同状态下的行为
+
+这些行为分布在模型、视图选项和命令执行接口中，只看默认功能模块容易漏掉。
+
+| 验收什么 | 本项目的取舍 |
+| --- | --- |
+| 只读与共享文档 | 第一批必需。在只读视图可移动光标、扩选、复制和查找。键入、剪切、粘贴、替换和撤销应按只读状态禁用。另一可写视图改动正文后，只读视图同步显示新内容。[Monaco 只读选项][readonly] · [Scoop 事务用例](../tests/transactions.scoop) |
+| 逻辑行、视觉行与列 | 第一批必需。软换行后，上下键和鼠标命中沿视觉行移动，整行移动、注释、缩进和行号仍按源码逻辑行。字符、UTF-8 字节列、Tab 展开列和像素横坐标分别有自己的用途。固定列折行、折行附加缩进、光标外形及滚动留白可按宿主需求追加。[Monaco 折行选项][wrapping] · [核心移动命令][core] |
+| 键入、覆盖选区与改写模式 | 第一批保留普通键入替换非空选区。单独切换的改写模式会在空光标处替换后面的字符，作为可选动作。选区数量、每处替换范围和撤销分组可用同一套事务表达。[Monaco 改写模式选项][overtype] · [Scoop 编辑合同](SPEC.md#编辑与选区) |
+| 视图、订阅与文档的寿命 | 第一批已有共享文档和独立视图。关闭一个视图及其监听后，另一视图还能读取、编辑和撤销。第二批扩展也应能单独移除自己的装饰、Lens 和提示。文档版本可用于剔除过期结果，文件路径、保存和未保存提示由宿主管理。[Monaco 模型与释放约定][concepts] · [Scoop 扩展用例](../tests/extensions.scoop) |
+
 ## 第二批　代码编辑视图与扩展
 
 | 能力 | Scoop 当前可用 | 组件应提供什么，宿主应提供什么 |
@@ -114,6 +125,9 @@ Monaco 为这些能力提供了不同的数据入口。语言配置描述符号�
 [lines]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/linesOperations/browser/linesOperations.ts
 [find]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/editor/contrib/find/browser/findModel.ts
 [options]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L3209
+[readonly]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L3334
+[wrapping]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L3498
+[overtype]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L3418
 [language]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L7038
 [tokens]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L6755
 [decor]: https://github.com/microsoft/vscode/blob/c132f72ae9f5ff80093e7d722c36f03755865b20/src/vs/monaco.d.ts#L1684
