@@ -1,0 +1,92 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.graphics.Color
+import scoop.graphics.text.*
+import scoop.window.*
+
+internal struct ColorRun(val start: Long, val end: Long, val color: Color)
+
+internal fun sameRuns(a: Array<ColorRun>, b: Array<ColorRun>): Boolean {
+    if (a.size != b.size) return false
+    for (i in 0L..<a.size) {
+        if (a[i] != b[i]) return false
+    }
+    return true
+}
+
+internal fun EditorInk.decorationsFor(line: Utf8Range): Array<CodeDecoration> {
+    val original = Utf8Range(
+        input.reverseMap?.map(line.start, CodeStickiness.Before) ?: line.start,
+        input.reverseMap?.map(line.end, CodeStickiness.After) ?: line.end
+    )
+    val result = ArrayList<CodeDecoration>()
+    editor.document.decorationStore.collect(original, result)
+    editor.decorationStore.collect(original, result)
+    val project = input.previewMap ?: return result.toArray()
+    return Array<CodeDecoration>(result.size) { i ->
+        val d = result[i]
+        val a = project.map(d.range.start, d.startBias)
+        val b = project.map(d.range.end, d.endBias)
+        CodeDecoration(Utf8Range(a, if (b < a) a else b), d.style, d.startBias, d.endBias)
+    }
+}
+
+internal fun foregroundRuns(line: Utf8Range, values: Array<CodeDecoration>): Array<ColorRun> {
+    val edges = ArrayList<Long>()
+    val candidates = ArrayList<CodeDecoration>()
+    for (d in values) {
+        if (d.style.foreground == None || d.range.start >= line.end || d.range.end <= line.start)
+            continue
+        candidates.add(d)
+        edges.add(if (d.range.start > line.start) d.range.start else line.start)
+        edges.add(if (d.range.end < line.end) d.range.end else line.end)
+    }
+    edges.sort()
+    val runs = ArrayList<ColorRun>()
+    for (i in 1L..<edges.size) {
+        val a = edges[i - 1L]
+        val b = edges[i]
+        if (b <= a) continue
+        var color: Color? = None
+        for (d in candidates) {
+            if (d.range.start <= a && d.range.end >= b) color = d.style.foreground
+        }
+        when (color) {
+            case Some(val c) -> {
+                val last = runs.size - 1L
+                val start = a - line.start
+                val end = b - line.start
+                if (last >= 0L && runs[last].end == start && runs[last].color == c)
+                    runs[last] = ColorRun(runs[last].start, end, c)
+                else
+                    runs.add(ColorRun(start, end, c))
+            }
+
+            case None -> {}
+        }
+    }
+    return runs.toArray()
+}
+
+internal fun coloredLine(
+    projection: LineProjection,
+    base: TextStyle,
+    runs: Array<ColorRun>
+): StyledText = styledText {
+    style = base
+    var at = 0L
+    for (run in runs) {
+        val a = projection.displayOffset(run.start)
+        val b = projection.displayOffset(run.end)
+        if (at < a) text(projection.text.utf8Slice(Utf8Range(at, a)))
+        val part = projection.text.utf8Slice(Utf8Range(a, b))
+        span {
+            style { color = Some(run.color) };
+            text(part)
+        }
+        at = b
+    }
+    if (at < projection.text.byteLength || runs.size == 0L)
+        text(projection.text.utf8Slice(Utf8Range(at, projection.text.byteLength)))
+}

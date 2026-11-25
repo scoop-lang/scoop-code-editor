@@ -9,14 +9,21 @@ import scoop.ui.*
 import scoop.window.*
 import scoop.window.accessibility.*
 
-public fun codeEditor(state: CodeEditorState): View = element(
+public fun codeEditor(state: CodeEditorState): View = component(
     state,
-    { props, scope -> EditorInk(props, scope) }
+    { props, scope -> EditorComponent(props, scope) }
 )
 
-internal class EditorInk(private val props: Props<CodeEditorState>, scope: ComponentScope) :
+internal class EditorInk(private val props: Props<EditorContents>, scope: ComponentScope) :
     Element<EditorFrame>(scope) {
-    internal var editor = props.value
+    internal val contents: EditorContents get() = props.value
+    internal var editor = contents.state
+    internal val shortcutScope = scope.resource { ShortcutScope(scope.input) }
+    internal var decorationRevision = 0L
+    internal fun decorationChanged() {
+        decorationRevision += 1L;
+        if (!ended && scope.isMounted) scope.requestLayout()
+    }
     internal var input = EditorInputSession(editor)
     internal val viewport = scope.scrollViewport(editor.scroll)
     internal val area = scope
@@ -65,32 +72,34 @@ internal class EditorInk(private val props: Props<CodeEditorState>, scope: Compo
         if (editor.closed || (editor.mounted?.ended == Some(false)))
             throw IllegalStateException(Some("editor state is closed or already mounted"))
         editor.mounted = Some(this)
+        updateShortcuts()
         change = Some(
             editor
                 .document
                 .onChange { event ->
-                    val old = accepted
-                    when (old) {
-                        case Some(val frame) -> {
-                            val hit = frame.hit(Point(frame.gutter + 1.0, 0.0))
-                            when (hit) {
-                                case Some(val pos) -> {
-                                    val y = frame.displayCaret(frame.displayPosition(pos))?.y ?: 0.0
-                                    val anchor = layoutEngine.anchor
-                                    val previous = anchor?.offset ?: pos.byteOffset
-                                    layoutEngine.anchor = Some(
-                                        ReadingAnchor(
-                                            event.mapping.map(previous),
-                                            anchor?.screenY ?: y,
-                                            editor.scroll.requestRevision
-                                        )
-                                    )
-                                };
-
-                                case None -> {}
+                    val request = editor.scroll.requestRevision
+                    val previous = when (val held = layoutEngine.anchor) {
+                        case Some(_) -> held
+                        case None ->
+                            when (val frame = accepted) {
+                                case Some(val value) ->
+                                    if (value.scrollRevision == request)
+                                        value.readingAnchor(request)
+                                    else
+                                        None
+                                case None -> None
                             }
-                        }
-
+                    }
+                    when (previous) {
+                        case Some(val a) ->
+                            layoutEngine.anchor = Some(
+                                ReadingAnchor(
+                                    event.mapping.map(a.offset),
+                                    a.screenY,
+                                    a.request,
+                                    a.affinity
+                                )
+                            )
                         case None -> {}
                     }
                     when (editor.reveal) {
@@ -148,6 +157,12 @@ internal class EditorInk(private val props: Props<CodeEditorState>, scope: Compo
         frame.document.version &&
         editor.options ===
         frame.options &&
+        frame.widgets ===
+        editor.widgetList.value &&
+        frame.scrollRevision ==
+        editor.scroll.requestRevision &&
+        frame.decorationRevision ==
+        decorationRevision &&
         (!input.composing || frame.inputRevision == input.state.revision) &&
         !projectionChanged &&
         (input.composing || frame.projected?.changes?.size == None)
@@ -180,9 +195,9 @@ internal class EditorInk(private val props: Props<CodeEditorState>, scope: Compo
         frame.displayPosition(editor.selections.primary.cursor)
 
     public override fun update(): UiInvalidation {
-        if (editor !== props.value) {
+        if (editor !== contents.state) {
             unbind()
-            editor = props.value
+            editor = contents.state
             viewport.state = editor.scroll
             area.scope.enabled = true
             area.textInput = !editor.readOnly
@@ -198,7 +213,7 @@ internal class EditorInk(private val props: Props<CodeEditorState>, scope: Compo
     public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
         EditorFrame
     > {
-        val frame = layoutEngine.measure(constraints)
+        val frame = layoutEngine.measure(context, constraints)
         return LayoutResult(LayoutMetrics(frame.size), frame, { frame.release() })
     }
 
@@ -210,6 +225,11 @@ internal class EditorInk(private val props: Props<CodeEditorState>, scope: Compo
         context.semantics(semantics, bounds)
         viewport.present(context, frame.scroll)
         drawEditor(context, frame, this)
+        context
+            .withState { children ->
+                children.clipRect(bounds);
+                children.children()
+            }
         val retained = frame.retain()
         val owner = editor
         val pending = editor.reveal

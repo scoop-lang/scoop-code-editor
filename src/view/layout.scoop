@@ -1,12 +1,18 @@
 package scoop.ui.editor
 
+import scoop.collections.HashMap
 import scoop.graphics.*
 import scoop.graphics.text.*
 import scoop.ui.*
 import scoop.ui.component.*
 import scoop.window.Utf8Range
 
-internal class ReadingAnchor(val offset: Long, val screenY: Double, val request: ULong)
+internal class ReadingAnchor(
+    val offset: Long,
+    val screenY: Double,
+    val request: ULong,
+    val affinity: TextAffinity
+)
 
 internal fun positive(value: Double): Double = if (value > 1.0) value else 1.0
 
@@ -17,6 +23,7 @@ internal class CodeLayout(val ink: EditorInk) {
     private var version = -1L
     private var revision = -1L
     private var fontRevision = -1L
+    private var previousZones = HashMap<Long, Double>()
     private var maximumWidth = 0.0
     internal var anchor: ReadingAnchor? = None
     private var cache = ArrayList<ShapedLine>()
@@ -38,7 +45,8 @@ internal class CodeLayout(val ink: EditorInk) {
         style: TextStyle,
         wrap: Double,
         tab: Long,
-        used: ArrayList<ShapedLine>
+        used: ArrayList<ShapedLine>,
+        runs: Array<ColorRun> = []
     ): ShapedLine {
         val fonts = ink.scope.defaultFonts
         for (line in cache) {
@@ -51,23 +59,28 @@ internal class CodeLayout(val ink: EditorInk) {
                 tab ==
                 line.tabSize &&
                 fonts.revision ==
-                line.fontsRevision
+                line.fontsRevision &&
+                sameRuns(line.runs, runs)
             ) {
                 used.add(line.retain())
                 return line.retain()
             }
         }
         val projection = LineProjection.from(source, tab)
-        val layout = Paragraph(fonts, projection.text, style)
+        val paragraph = if (runs.size == 0L)
+            Paragraph(fonts, projection.text, style)
+        else
+            Paragraph(fonts, coloredLine(projection, style, runs))
+        val layout = paragraph
             .use { paragraph ->
                 if (wrap < 0.0) paragraph.layoutUnwrapped() else paragraph.layout(wrap)
             }
-        val line = ShapedLine(source, projection, layout, style, wrap, tab, fonts.revision)
+        val line = ShapedLine(source, projection, layout, style, wrap, tab, fonts.revision, runs)
         used.add(line.retain())
         return line
     }
 
-    internal fun measure(constraints: Constraints): EditorFrame {
+    internal fun measure(context: MeasureContext, constraints: Constraints): EditorFrame {
         val state = ink.editor
         val opt = state.options
         val doc = ink.input.preview ?: CodeSnapshot(state.document.root, state.document.version)
@@ -78,12 +91,35 @@ internal class CodeLayout(val ink: EditorInk) {
         else
             4.0
         val wrap = if (opt.softWrap) positive(size.width - gutter - 4.0) else -1.0
+        val widgets = WidgetLayout(ink, context, size, gutter, doc)
         val estimate = positive(opt.text.fontSize * 1.45)
         val styleChanged = when (options) {
             case Some(val previous) -> previous !== opt;
             case None -> true
         }
         val fonts = ink.scope.defaultFonts
+        val previousFrame = ink.accepted
+        if (anchor?.request ==
+            None &&
+            state.reveal ==
+            None &&
+            !ink.input.composing &&
+            previousFrame?.document?.version ==
+            Some(doc.version) &&
+            previousFrame!!.scrollRevision ==
+            state.scroll.requestRevision &&
+            (
+                width !=
+                    wrap ||
+                    styleChanged ||
+                    fontRevision !=
+                    fonts.revision ||
+                    previousFrame!!.widgets !==
+                    ink.contents.widgets
+            )
+        ) {
+            anchor = previousFrame!!.readingAnchor(state.scroll.requestRevision)
+        }
         if (styleChanged) gutterStyle = opt.text.copy { color = opt.gutter }
         if (doc.lineCount !=
             index.count ||
@@ -97,6 +133,7 @@ internal class CodeLayout(val ink: EditorInk) {
             fontRevision ||
             ink.projectionChanged
         ) {
+            previousZones.clear()
             index = ItemExtentIndex(doc.lineCount, ItemExtent.Variable(estimate))
             maximumWidth = 0.0
             val old = ink.accepted
@@ -118,6 +155,13 @@ internal class CodeLayout(val ink: EditorInk) {
                 }
             }
         }
+        for (entry in previousZones) {
+            val line = entry.key
+            if (line < index.count) index.record(line, positive(index.extent(line) - entry.value))
+        }
+        for (entry in widgets.zones)
+            index.record(entry.key, index.extent(entry.key) + entry.value)
+        previousZones = widgets.zones
         version = doc.version
         revision = ink.input.state.revision
         options = Some(opt)
@@ -135,34 +179,57 @@ internal class CodeLayout(val ink: EditorInk) {
                 Some(doc.positionAt(ink.input.previewMap?.map(range.end) ?: range.end).line)
             case None -> None
         }
-        when (pinned) {
-            case Some(val a) ->
-                if (a.request == scroll.requestRevision && pending == None) {
-                    val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
-                    y = index.prefix(doc.positionAt(offset).line) - a.screenY
+        val used = ArrayList<ShapedLine>()
+        val rows = ArrayList<ScreenRow>()
+        var anchorLine = -1L
+        var withinAnchor = 0.0
+        try {
+            if (pinned?.request == Some(scroll.requestRevision) && pending == None) {
+                val a = pinned!!
+                val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
+                anchorLine = doc.positionAt(offset).line
+                val r = doc.lineRange(anchorLine)
+                val body = shape(
+                    doc.read(r),
+                    opt.text,
+                    wrap,
+                    opt.tabSize,
+                    used,
+                    foregroundRuns(r, ink.decorationsFor(r))
+                )
+                try {
+                    val local = if (offset > r.end) r.end - r.start else offset - r.start
+                    withinAnchor = (body.layout.caret(body.display(local, a.affinity))?.y ?: 0.0) -
+                        a.screenY
+                    y = index.prefix(anchorLine) + withinAnchor
                     adjustment = Some(
                         ScrollAdjustment(a.request, Point(x, if (y > 0.0) y else 0.0))
                     )
+                } finally {
+                    body.release()
                 }
-            case None -> {}
-        }
-        val used = ArrayList<ShapedLine>()
-        val rows = ArrayList<ScreenRow>()
-        try {
+            }
             when (target) {
                 case Some(val line) -> {
                     val r = doc.lineRange(line)
-                    val body = shape(doc.read(r), opt.text, wrap, opt.tabSize, used)
+                    val body = shape(
+                        doc.read(r),
+                        opt.text,
+                        wrap,
+                        opt.tabSize,
+                        used,
+                        foregroundRuns(r, ink.decorationsFor(r))
+                    )
                     try {
                         val h = positive(body.layout.size.height)
-                        index.record(line, h)
+                        index.record(line, h + (widgets.zones[line] ?: 0.0))
                         val measured = body.layout.size.width + gutter + 4.0
                         if (measured > maximumWidth) maximumWidth = measured
                         val offset = ink.input.previewMap?.map(pending!!.end) ?: pending!!.end
                         val local = if (offset > r.end) r.end - r.start else offset - r.start
                         val caret = body
                             .layout
-                            .caret(TextPosition(body.projection.displayOffset(local)))
+                            .caret(body.display(local))
                         val top = index.prefix(line) + (caret?.y ?: 0.0)
                         val bottom = top + (caret?.height ?: h)
                         if (top < y)
@@ -196,17 +263,33 @@ internal class CodeLayout(val ink: EditorInk) {
                     (rows.size == 0L || index.prefix(line) <= y + size.height + estimate)
             ) {
                 val r = doc.lineRange(line)
-                val body = shape(doc.read(r), opt.text, wrap, opt.tabSize, used)
+                val body = shape(
+                    doc.read(r),
+                    opt.text,
+                    wrap,
+                    opt.tabSize,
+                    used,
+                    foregroundRuns(r, ink.decorationsFor(r))
+                )
                 val label = if (opt.lineNumbers)
                     Some(shape((line + 1L).toString(), gutterStyle, -1.0, 1L, used))
                 else
                     None
                 val h = positive(body.layout.size.height)
-                index.record(line, h)
+                index.record(line, h + (widgets.zones[line] ?: 0.0))
                 rows.add(ScreenRow(line, r, body, label, index.prefix(line), h))
                 val measured = body.layout.size.width + gutter + 4.0
                 if (measured > maximumWidth) maximumWidth = measured
                 line += 1L
+            }
+            if (anchorLine >= 0L) {
+                val corrected = index.prefix(anchorLine) + withinAnchor
+                adjustment = Some(
+                    ScrollAdjustment(
+                        scroll.requestRevision,
+                        Point(x, if (corrected > 0.0) corrected else 0.0)
+                    )
+                )
             }
             offered = ink
                 .viewport
@@ -215,7 +298,7 @@ internal class CodeLayout(val ink: EditorInk) {
                     Size(if (opt.softWrap) size.width else maximumWidth, index.total),
                     adjustment
                 )
-            return EditorFrame(
+            val frame = EditorFrame(
                 doc,
                 revision,
                 opt,
@@ -224,8 +307,11 @@ internal class CodeLayout(val ink: EditorInk) {
                 gutter,
                 rows.toArray(),
                 ink.input.previewMap,
-                ink.input.reverseMap
+                ink.input.reverseMap, ink.decorationRevision, ink.contents.widgets, scroll
+                    .requestRevision
             )
+            widgets.place(frame, index)
+            return frame
         } catch (error: Throwable) {
             for (row in rows) {
                 row.ink.release();

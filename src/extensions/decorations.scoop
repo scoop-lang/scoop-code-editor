@@ -1,0 +1,132 @@
+package scoop.ui.editor
+
+import scoop.collections.*
+import scoop.comparisons.comparatorOf
+import scoop.graphics.Color
+import scoop.window.Utf8Range
+
+public struct CodeDecorationStyle(
+    val foreground: Color? = None,
+    val background: Color? = None,
+    val underline: Color? = None,
+    val gutter: Color? = None
+)
+
+public struct CodeDecoration(
+    val range: Utf8Range,
+    val style: CodeDecorationStyle,
+    val startBias: CodeStickiness = CodeStickiness.After,
+    val endBias: CodeStickiness = CodeStickiness.Before
+)
+
+private class IndexedDecoration(val value: CodeDecoration, val order: Long, var maximumEnd: Long)
+
+public class CodeDecorations internal constructor(private val store: DecorationStore) : Closeable {
+    private var values: Array<CodeDecoration> = []
+    private var sorted: Array<IndexedDecoration> = []
+    private var closed = false
+
+    public fun set(decorations: List<CodeDecoration>) {
+        if (closed) throw IllegalStateException(Some("decoration collection is closed"))
+        for (d in decorations) {
+            if (!validRange(store.doc.root, d.range))
+                throw IllegalArgumentException(Some("invalid decoration range"))
+        }
+        index(decorations.toArray())
+        store.changed()
+    }
+
+    private fun index(next: Array<CodeDecoration>) {
+        val entries = ArrayList<IndexedDecoration>()
+        for (i in 0L..<next.size)
+            entries.add(IndexedDecoration(next[i], i, 0L))
+        entries
+            .sortWith(
+                comparatorOf<IndexedDecoration> { a, b ->
+                    a.value.range.start.compareTo(b.value.range.start)
+                }
+            )
+        var end = 0L
+        for (entry in entries) {
+            if (entry.value.range.end > end) end = entry.value.range.end
+            entry.maximumEnd = end
+        }
+        values = next
+        sorted = entries.toArray()
+    }
+
+    internal fun map(mapping: CodeEditMap) {
+        if (values.size == 0L) return
+        index(
+            Array<CodeDecoration>(values.size) { i ->
+                val d = values[i]
+                val a = mapping.map(d.range.start, d.startBias)
+                val b = mapping.map(d.range.end, d.endBias)
+                CodeDecoration(Utf8Range(a, if (b < a) a else b), d.style, d.startBias, d.endBias)
+            }
+        )
+    }
+
+    internal fun collect(range: Utf8Range, output: ArrayList<CodeDecoration>) {
+        var low = 0L
+        var high = sorted.size
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (sorted[mid].maximumEnd < range.start) low = mid + 1L else high = mid
+        }
+        val intersecting = ArrayList<IndexedDecoration>()
+        var i = low
+        while (i < sorted.size) {
+            val entry = sorted[i]
+            val r = entry.value.range
+            if (r.start > range.end) break
+            if (r.end >= range.start) intersecting.add(entry)
+            i += 1L
+        }
+        intersecting
+            .sortWith(comparatorOf<IndexedDecoration> { a, b -> a.order.compareTo(b.order) })
+        for (entry in intersecting)
+            output.add(entry.value)
+    }
+
+    public fun clear() {
+        set([])
+    }
+    public override fun close() {
+        if (closed) return
+        closed = true
+        values = []
+        sorted = []
+        store.remove(this)
+    }
+}
+
+internal class DecorationStore(val doc: CodeDocument, val changed: () -> Unit) {
+    private val collections = ArrayList<CodeDecorations>()
+    internal fun create(): CodeDecorations {
+        val group = CodeDecorations(this);
+        collections.add(group);
+        return group
+    }
+    internal fun map(mapping: CodeEditMap) {
+        for (group in collections)
+            group.map(mapping)
+    }
+    internal fun collect(range: Utf8Range, output: ArrayList<CodeDecoration>) {
+        for (group in collections)
+            group.collect(range, output)
+    }
+    internal fun remove(group: CodeDecorations) {
+        for (i in 0L..<collections.size) {
+            if (collections[i] === group) {
+                collections.removeAt(i);
+                changed();
+                return
+            }
+        }
+    }
+    internal fun close() {
+        for (group in collections.toArray())
+            group.close()
+    }
+}

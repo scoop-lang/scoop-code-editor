@@ -1,0 +1,125 @@
+package scoop.ui.editor
+
+import scoop.graphics.Color
+import scoop.test.*
+import scoop.text.repeat
+import scoop.ui.component.label
+import scoop.window.*
+
+@Test
+private class CodeExtensionTests {
+    @Test
+    fun streamingLiteralSearchMatchesAcrossPiecesAndReplaceAllHasOneUndo() {
+        val start = "x".repeat(4094L)
+        val doc = CodeDocument(start + "abababa-ababa")
+        val left = CodeEditorState(doc)
+        val right = CodeEditorState(doc)
+        val f = CodeFind(left, "ababa")
+        assertEquals(2L, f.matches.size)
+        assertEquals(Utf8Range(4094L, 4099L), f.matches[0L])
+        assertEquals(Utf8Range(4102L, 4107L), f.matches[1L])
+        assertTrue(left.runAction("find.next"))
+        assertEquals(f.matches[0L], left.selections.primary.range)
+        assertTrue(left.runAction("find.addNext"))
+        assertEquals(2L, left.selections.values.size)
+        val other = ArrayList<CodeDecoration>()
+        right.decorationStore.collect(Utf8Range(4094L, 4107L), other)
+        assertEquals(0L, other.size)
+        f.replacement = "中"
+        assertTrue(left.runAction("find.replaceAll"))
+        assertEquals("中ba-中", doc.read(Utf8Range(4094L, doc.byteLength)))
+        assertEquals(0L, f.matches.size)
+        assertEquals(CodeEditResult.Applied, right.undo())
+        assertEquals("abababa-ababa", doc.read(Utf8Range(4094L, doc.byteLength)))
+        assertEquals(2L, f.matches.size)
+        val old = doc.snapshot()
+        doc.applyEdits(doc.version, [CodeEdit(Utf8Range(0L, 1L), "")])
+        assertEquals(
+            CodeEditResult.Stale,
+            left.executeEdits(old.version, [CodeEdit(findLiteral(old, "ababa")[0L], "old")])
+        )
+        left.readOnly = true
+        assertFalse(left.runAction("find.replaceAll"))
+        assertEquals(CodeEditResult.ReadOnly, f.replaceAll())
+        f.query = ""
+        assertEquals(0L, f.matches.size)
+        f.close()
+        assertFalse(left.runAction("find.next"))
+    }
+
+    @Test
+    fun sharedAndLocalDecorationsRetainTheirScopeStyleOrderAndBias() {
+        val doc = CodeDocument("abcde")
+        val state = CodeEditorState(doc)
+        val shared = doc.decorations()
+        val local = state.decorations()
+        val red = Color(1.0, 0.0, 0.0)
+        val blue = Color(0.0, 0.0, 1.0)
+        shared
+            .set(
+                [
+                    CodeDecoration(
+                        Utf8Range(1L, 4L), CodeDecorationStyle(foreground = Some(red)),
+                        CodeStickiness.Before, CodeStickiness.After
+                    )
+                ]
+            )
+        local.set([CodeDecoration(Utf8Range(2L, 3L), CodeDecorationStyle(foreground = Some(blue)))])
+        val incoming = ArrayList<CodeDecoration>()
+        doc.decorationStore.collect(doc.lineRange(0L), incoming)
+        state.decorationStore.collect(doc.lineRange(0L), incoming)
+        val colors = foregroundRuns(doc.lineRange(0L), incoming.toArray())
+        assertEquals(3L, colors.size)
+        assertEquals(blue, colors[1L].color)
+        assertFailsWith<IllegalArgumentException> {
+            shared.set([CodeDecoration(Utf8Range(4L, 9L), CodeDecorationStyle())])
+        }
+        doc.applyEdits(0L, [CodeEdit(Utf8Range(1L, 1L), "!"), CodeEdit(Utf8Range(4L, 4L), "?")])
+        incoming.clear()
+        doc.decorationStore.collect(doc.lineRange(0L), incoming)
+        state.decorationStore.collect(doc.lineRange(0L), incoming)
+        assertEquals(Utf8Range(1L, 6L), incoming[0L].range)
+        assertEquals(Utf8Range(3L, 4L), incoming[1L].range)
+        local.close();
+        shared.clear();
+        shared.close()
+        incoming.clear()
+        doc.decorationStore.collect(doc.lineRange(0L), incoming)
+        state.decorationStore.collect(doc.lineRange(0L), incoming)
+        assertEquals(0L, incoming.size)
+    }
+
+    @Test
+    fun widgetsFollowEditsAndActionsRetireWithTheirRegistration() {
+        val doc = CodeDocument("a\nb\nc")
+        val state = CodeEditorState(doc)
+        val note = CodeLineNote(state, 1L, "line note")
+        note.expanded = true
+        assertEquals(2L, state.widgets.size)
+        val overlay = state.addOverlayWidget(CodeEditorCorner.TopRight, label("toolbar"))
+        assertEquals(3L, state.widgets.size)
+        doc.applyEdits(0L, [CodeEdit(Utf8Range(2L, 4L), "")])
+        assertEquals(2L, state.widgets[0L].offset)
+        assertEquals(2L, state.widgets[1L].offset)
+        note.expanded = false
+        assertEquals(2L, state.widgets.size)
+        note.close();
+        overlay.close()
+        assertEquals(0L, state.widgets.size)
+        val action = state
+            .addAction("type", "Type", enabled = { s -> !s.readOnly }) { s ->
+                s.replaceSelections("x")
+            }
+        assertFailsWith<IllegalArgumentException> {
+            state.addAction("type", "Duplicate") { _ -> Unit }
+        }
+        assertTrue(state.runAction("type"))
+        state.readOnly = true
+        assertFalse(state.runAction("type"))
+        action.close();
+        action.close()
+        state.readOnly = false
+        assertFalse(state.runAction("type"))
+        state.close()
+    }
+}

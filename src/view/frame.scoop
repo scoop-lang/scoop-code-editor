@@ -12,9 +12,28 @@ internal class ShapedLine(
     val style: TextStyle,
     val width: Double,
     val tabSize: Long,
-    val fontsRevision: Long
+    val fontsRevision: Long,
+    val runs: Array<ColorRun> = []
 ) {
     private var owners = 1L
+    internal fun display(
+        source: Long,
+        affinity: TextAffinity = TextAffinity.Downstream
+    ): TextPosition {
+        val offset = projection.displayOffset(source)
+        val boundaries = layout.graphemeBoundaries
+        var low = 0L
+        var high = boundaries.size - 1L
+        while (low < high) {
+            val mid = (low + high) / 2L
+            if (boundaries[mid] < offset) low = mid + 1L else high = mid
+        }
+        val index = if (boundaries[low] != offset && low > 0L && affinity == TextAffinity.Upstream)
+            low - 1L
+        else
+            low
+        return TextPosition(boundaries[index], affinity)
+    }
     internal fun retain(): ShapedLine {
         owners += 1L;
         return this
@@ -33,10 +52,8 @@ internal class ScreenRow(
     val top: Double,
     val height: Double
 ) {
-    internal fun display(position: TextPosition): TextPosition = TextPosition(
-        ink.projection.displayOffset(position.byteOffset - range.start),
-        position.affinity
-    )
+    internal fun display(position: TextPosition): TextPosition = ink
+        .display(position.byteOffset - range.start, position.affinity)
     internal fun source(position: TextPosition): TextPosition = TextPosition(
         range.start + ink.projection.sourceOffset(position.byteOffset),
         position.affinity
@@ -52,7 +69,10 @@ internal class EditorFrame(
     val gutter: Double,
     val rows: Array<ScreenRow>,
     val projected: CodeEditMap?,
-    val unprojected: CodeEditMap?
+    val unprojected: CodeEditMap?,
+    val decorationRevision: Long,
+    val widgets: Array<EditorWidget>,
+    val scrollRevision: ULong
 ) {
     private var owners = 1L
     internal val origin: Point get() = scroll.presentationOffset
@@ -109,6 +129,12 @@ internal class EditorFrame(
         }
         val pos = row.ink.layout.hitTest(Point(point.x - gutter + origin.x, y - row.top))
         return Some(original(row.source(pos)))
+    }
+
+    internal fun readingAnchor(request: ULong): ReadingAnchor? {
+        val position = hit(Point(gutter + 1.0, 0.0)) ?: return None
+        val caret = displayCaret(displayPosition(position)) ?: return None
+        return Some(ReadingAnchor(position.byteOffset, caret.y, request, position.affinity))
     }
 
     internal fun visible(): Array<Utf8Range> {

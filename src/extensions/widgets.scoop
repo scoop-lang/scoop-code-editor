@@ -1,0 +1,62 @@
+package scoop.ui.editor
+
+import scoop.ui.*
+import scoop.window.Utf8Range
+
+public enum CodeEditorCorner {
+    TopLeft, TopRight, BottomLeft, BottomRight
+}
+
+internal enum EditorWidgetKind {
+    Content, Zone, Overlay(CodeEditorCorner)
+}
+
+internal class EditorWidget(
+    val kind: EditorWidgetKind,
+    var offset: Long,
+    val view: View,
+    val id: Long
+)
+
+private fun CodeEditorState.addWidget(kind: EditorWidgetKind, offset: Long, view: View): Closeable {
+    if (closed || !scalarBoundary(document.root, offset))
+        throw IllegalArgumentException(Some("invalid widget anchor or closed editor"))
+    widgetId += 1L
+    val widget = EditorWidget(kind, offset, view, widgetId)
+    widgets.add(widget)
+    widgetList.value = widgets.toArray()
+    return EditorRegistration {
+        for (i in 0L..<widgets.size) {
+            if (widgets[i] === widget) {
+                widgets.removeAt(i);
+                break
+            }
+        }
+        widgetList.value = widgets.toArray()
+    }
+}
+
+public fun CodeEditorState.addContentWidget(position: Long, view: View): Closeable = addWidget(
+    EditorWidgetKind.Content,
+    position,
+    view
+)
+
+public fun CodeEditorState.addOverlayWidget(corner: CodeEditorCorner, view: View): Closeable =
+    addWidget(EditorWidgetKind.Overlay(corner), 0L, view)
+
+public fun CodeEditorState.addViewZone(afterLine: Long, view: View): Closeable = addWidget(
+    EditorWidgetKind.Zone,
+    document.lineRange(afterLine).end,
+    view
+)
+
+internal fun CodeEditorState.mapWidgets(mapping: CodeEditMap) {
+    for (widget in widgets) {
+        when (widget.kind) {
+            case Content -> widget.offset = mapping.map(widget.offset)
+            case Zone -> widget.offset = mapping.map(widget.offset, CodeStickiness.Before)
+            case Overlay(_) -> {}
+        }
+    }
+}

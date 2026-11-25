@@ -1,0 +1,141 @@
+package scoop.ui.editor
+
+import scoop.collections.HashMap
+import scoop.graphics.*
+import scoop.graphics.text.TextPosition
+import scoop.ui.*
+import scoop.ui.component.ItemExtentIndex
+
+internal class WidgetLayout(
+    val ink: EditorInk,
+    val context: MeasureContext,
+    val size: Size,
+    val gutter: Double,
+    val doc: CodeSnapshot
+) {
+    internal val zones = HashMap<Long, Double>()
+    private val heights = HashMap<Long, Double>()
+    private val lines = HashMap<Long, Long>()
+    private val items = ink.contents.widgets
+    private val body = if (size.width > gutter) size.width - gutter else 0.0
+
+    init {
+        for (i in 0L..<items.size) {
+            val w = items[i]
+            when (w.kind) {
+                case Zone -> {
+                    val offset = ink.input.previewMap?.map(w.offset) ?: w.offset
+                    val line = doc.positionAt(offset).line
+                    val measured = context
+                        .measureChild(i, Constraints(minWidth = body, maxWidth = Some(body)))
+                    heights.put(i, measured.size.height)
+                    lines.put(i, line)
+                    zones.put(line, (zones[line] ?: 0.0) + measured.size.height)
+                }
+
+                else -> {}
+            }
+        }
+    }
+
+    internal fun place(frame: EditorFrame, index: ItemExtentIndex) {
+        val placed = HashMap<Long, Double>()
+        for (i in 0L..<items.size) {
+            val widget = items[i]
+            when (widget.kind) {
+                case Zone -> {
+                    val line = lines[i]!!
+                    val above = placed[line] ?: 0.0
+                    val y = index.prefix(line + 1L) - (zones[line] ?: 0.0) + above - frame.origin.y
+                    context.placeChild(i, Point(gutter, y))
+                    placed.put(line, above + (heights[i] ?: 0.0))
+                }
+
+                case Content -> {
+                    val position = frame.displayPosition(TextPosition(widget.offset))
+                    val caret = ink.clippedCaret(frame, position)
+                    when (caret) {
+                        case None -> context.skipChild(i)
+
+                        case Some(val rect) -> {
+                            val metrics = context
+                                .measureChild(
+                                    i,
+                                    Constraints(
+                                        maxWidth = Some(body),
+                                        maxHeight = Some(size.height)
+                                    )
+                                )
+                            val x = if (rect.x + metrics.size.width > size.width)
+                                size.width - metrics.size.width
+                            else
+                                rect.x
+                            val y = if (rect.y + rect.height + metrics.size.height <= size.height)
+                                rect.y + rect.height
+                            else
+                                rect.y - metrics.size.height
+                            context.placeChild(i, Point(x, if (y > 0.0) y else 0.0))
+                        }
+                    }
+                }
+
+                case Overlay(val corner) -> {
+                    val metrics = context
+                        .measureChild(
+                            i,
+                            Constraints(maxWidth = Some(size.width), maxHeight = Some(size.height))
+                        )
+                    val x = if (corner ==
+                        CodeEditorCorner.TopRight ||
+                        corner ==
+                        CodeEditorCorner.BottomRight
+                    )
+                        size.width - metrics.size.width
+                    else
+                        0.0
+                    val y = if (corner ==
+                        CodeEditorCorner.BottomLeft ||
+                        corner ==
+                        CodeEditorCorner.BottomRight
+                    )
+                        size.height - metrics.size.height
+                    else
+                        0.0
+                    context.placeChild(i, Point(x, y))
+                }
+            }
+        }
+    }
+}
+
+internal class EditorContents(val state: CodeEditorState, val widgets: Array<EditorWidget>)
+
+internal class EditorComponent(val input: Props<CodeEditorState>, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View {
+        val state = input.value
+        val widgets = state.widgetList.value
+        val children = Array<View>(widgets.size) { i ->
+            val widget = widgets[i]
+            element({ mount -> WidgetSlot(mount) }, [widget.view], ViewKey.Number(widget.id))
+        }
+        return element(
+            EditorContents(state, widgets),
+            { props, mount -> EditorInk(props, mount) },
+            children
+        )
+    }
+}
+
+private class WidgetSlot(scope: ComponentScope) : Element<Unit>(scope) {
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        Unit
+    > {
+        val metrics = context.measureChild(0L, constraints)
+        context.placeChild(0L, Point(0.0, 0.0))
+        return LayoutResult(metrics, Unit)
+    }
+    public override fun scene(context: SceneContext, layout: Unit) {
+        context.children()
+    }
+}

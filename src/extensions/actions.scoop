@@ -1,0 +1,75 @@
+package scoop.ui.editor
+
+import scoop.surface.*
+import scoop.window.ShortcutChord
+
+internal class EditorAction(
+    val id: String,
+    val label: String,
+    val shortcut: ShortcutChord?,
+    val enabled: (CodeEditorState) -> Boolean,
+    val run: (CodeEditorState) -> Unit
+)
+
+public fun CodeEditorState.addAction(
+    id: String,
+    label: String,
+    shortcut: ShortcutChord? = None,
+    enabled: (CodeEditorState) -> Boolean = { _ -> true },
+    run: (CodeEditorState) -> Unit
+): Closeable {
+    if (closed || id.byteLength == 0L)
+        throw IllegalArgumentException(Some("invalid action or closed editor"))
+    for (entry in actions) {
+        if (entry.id == id) throw IllegalArgumentException(Some("duplicate editor action id"))
+        if (when (shortcut) {
+            case Some(val chord) -> entry.shortcut?.equivalentTo(chord) ?: false;
+            case None -> false
+        }
+        )
+            throw IllegalArgumentException(Some("duplicate editor shortcut"))
+    }
+    val action = EditorAction(id, label, shortcut, enabled, run)
+    actions.add(action)
+    mounted?.updateShortcuts()
+    return EditorRegistration {
+        for (i in 0L..<actions.size) {
+            if (actions[i] === action) {
+                actions.removeAt(i);
+                break
+            }
+        }
+        mounted?.updateShortcuts()
+    }
+}
+
+public fun CodeEditorState.runAction(id: String): Boolean {
+    if (closed) return false
+    for (action in actions) {
+        if (action.id == id && action.enabled(this)) {
+            breakUndoGroup()
+            try {
+                action.run(this)
+            } finally {
+                breakUndoGroup()
+            }
+            return true
+        }
+    }
+    return false
+}
+
+internal fun EditorInk.updateShortcuts() {
+    val state = editor
+    val bindings = ArrayList<ShortcutBinding>()
+    for (action in state.actions) {
+        val chord = action.shortcut ?: continue
+        bindings
+            .add(
+                shortcutBinding(chord, { state.runAction(action.id) }) {
+                    canExecute = { !state.closed && action.enabled(state) }
+                }
+            )
+    }
+    shortcutScope.bindings = bindings.toArray()
+}

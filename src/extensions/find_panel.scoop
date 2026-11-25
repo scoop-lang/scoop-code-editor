@@ -1,0 +1,104 @@
+package scoop.ui.editor
+
+import scoop.graphics.Color
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.text.TextEditorState
+
+// These two ordinary form fields belong to the find overlay.
+internal fun findPanel(find: CodeFind): View = component({ scope -> FindPanel(find, scope) })
+
+private class FindPanel(val find: CodeFind, scope: ComponentScope) : Component(scope) {
+    private val queryField = TextEditorState(find.query)
+    private val replacementField = TextEditorState(find.replacement)
+    private val searchFocus = FocusHandle()
+    public override fun onMount() {
+        scope.application.proxy().post { _ -> if (scope.isMounted) searchFocus.requestFocus() }
+    }
+    public override fun render(): View {
+        val search = find
+        val focus = searchFocus
+        val query = input(queryField) {
+            label = "Find";
+            placeholder = "Find";
+            this.focus = FocusOptions(handle = Some(focus))
+            onEdited = { field -> search.query = field.text }
+            onSubmit = { _ -> search.editor.runAction("find.next") }
+        }
+        val replacement = input(replacementField) {
+            label = "Replace";
+            placeholder = "Replace"
+            onEdited = { field -> search.replacement = field.text }
+            onSubmit = { _ -> search.editor.runAction("find.replace") }
+        }
+        val next = button("Next", { search.editor.runAction("find.next") })
+        val current = button("Replace", { search.editor.runAction("find.replace") })
+        val all = button("All", { search.editor.runAction("find.replaceAll") })
+        val close = button("Close", { search.closePanel() })
+        val actions = row {
+            item(next);
+            item(current);
+            item(all);
+            item(close)
+        }
+        return column {
+            item(query);
+            item(replacement);
+            item(actions)
+        }
+    }
+}
+
+/** One anchored hint and an expandable measured annotation, owned by the caller. */
+public class CodeLineNote public constructor(
+    private val editor: CodeEditorState,
+    line: Long,
+    public val message: String
+) : Closeable {
+    private val marker = editor.decorations()
+    private var anchor = editor.document.lineRange(line).end
+    private val hint = editor.addContentWidget(anchor, button("Note", { toggle() }))
+    private val watch = editor
+        .document
+        .onChange { e -> anchor = e.mapping.map(anchor, CodeStickiness.Before) }
+    private var zone: Closeable? = None
+    private var closed = false
+    private var open = false
+    public var expanded: Boolean
+        get() = open
+        set(value) {
+            if (closed || value == open) return
+            if (value)
+                zone = Some(
+                    editor.addViewZone(editor.document.positionAt(anchor).line, label(message))
+                )
+            else {
+                zone?.close();
+                zone = None
+            }
+            open = value
+        }
+    init {
+        marker
+            .set(
+                [
+                    CodeDecoration(
+                        editor.document.lineRange(line),
+                        CodeDecorationStyle(gutter = Some(Color(0.35, 0.46, 0.80)))
+                    )
+                ]
+            )
+    }
+    private fun toggle() {
+        expanded = !expanded
+    }
+    public override fun close() {
+        if (closed) return
+        closed = true
+        zone?.close();
+        zone = None
+        hint.close();
+        watch.close();
+        marker.close()
+    }
+}

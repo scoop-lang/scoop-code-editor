@@ -68,6 +68,11 @@ public class CodeSnapshot internal constructor(
 }
 
 public class CodeDocument public constructor(text: String = "") {
+    internal val decorationStore = DecorationStore(this) {
+        for (view in views)
+            view.mounted?.decorationChanged()
+    }
+    public fun decorations(): CodeDecorations = decorationStore.create()
     internal val views = ArrayList<CodeEditorState>()
     internal val history = EditHistory()
     internal val events = EditorSignal<CodeDocumentChange>()
