@@ -1,0 +1,143 @@
+package scoop.ui.editor
+
+internal class PieceNode(
+    val red: Boolean,
+    val left: PieceNode?,
+    val piece: TextPiece,
+    val right: PieceNode?
+) {
+    internal val blackHeight: Long = (left?.blackHeight ?: 0L) + if (red) 0L else 1L
+    internal val measure: TextMeasure = treeMeasure(left)
+        .followedBy(piece.measure)
+        .followedBy(treeMeasure(right))
+}
+
+internal fun treeMeasure(node: PieceNode?): TextMeasure = node?.measure ?: emptyMeasure()
+
+private fun blackRoot(tree: PieceNode?): PieceNode? {
+    val n = tree ?: return None
+    return if (n.red) Some(PieceNode(false, n.left, n.piece, n.right)) else tree
+}
+
+private fun liftRed(
+    a: PieceNode?,
+    x: TextPiece,
+    b: PieceNode?,
+    y: TextPiece,
+    c: PieceNode?,
+    z: TextPiece,
+    d: PieceNode?
+): PieceNode = PieceNode(true, Some(PieceNode(false, a, x, b)), y, Some(PieceNode(false, c, z, d)))
+
+private fun balance(
+    red: Boolean,
+    left: PieceNode?,
+    piece: TextPiece,
+    right: PieceNode?
+): PieceNode {
+    if (!red && (left?.red ?: false)) {
+        val l = left!!
+        if (l.left?.red ?: false) {
+            val ll = l.left!!
+            return liftRed(ll.left, ll.piece, ll.right, l.piece, l.right, piece, right)
+        }
+        if (l.right?.red ?: false) {
+            val lr = l.right!!
+            return liftRed(l.left, l.piece, lr.left, lr.piece, lr.right, piece, right)
+        }
+    }
+    if (!red && (right?.red ?: false)) {
+        val r = right!!
+        if (r.left?.red ?: false) {
+            val rl = r.left!!
+            return liftRed(left, piece, rl.left, rl.piece, rl.right, r.piece, r.right)
+        }
+        if (r.right?.red ?: false) {
+            val rr = r.right!!
+            return liftRed(left, piece, r.left, r.piece, rr.left, rr.piece, rr.right)
+        }
+    }
+    return PieceNode(red, left, piece, right)
+}
+
+// Descend the taller spine to a black subtree of equal black height.
+private fun joinAt(left: PieceNode?, piece: TextPiece, right: PieceNode?): PieceNode {
+    val lh = left?.blackHeight ?: 0L
+    val rh = right?.blackHeight ?: 0L
+    if (lh > rh || (lh == rh && (left?.red ?: false))) {
+        val l = left!!
+        return balance(l.red, l.left, l.piece, Some(joinAt(l.right, piece, right)))
+    }
+    if (rh > lh || (right?.red ?: false)) {
+        val r = right!!
+        return balance(r.red, Some(joinAt(left, piece, r.left)), r.piece, r.right)
+    }
+    return PieceNode(true, left, piece, right)
+}
+
+private fun joined(left: PieceNode?, piece: TextPiece, right: PieceNode?): PieceNode? = blackRoot(
+    Some(joinAt(blackRoot(left), piece, blackRoot(right)))
+)
+
+internal struct PieceSplit(val before: PieceNode?, val after: PieceNode?)
+
+internal fun splitPieces(tree: PieceNode?, offset: Long): PieceSplit {
+    val node = tree ?: return PieceSplit(None, None)
+    if (offset == 0L) return PieceSplit(None, blackRoot(tree))
+    if (offset == node.measure.bytes) return PieceSplit(blackRoot(tree), None)
+    val start = treeMeasure(node.left).bytes
+    val piece = node.piece
+    val end = start + piece.measure.bytes
+    if (offset < start) {
+        val split = splitPieces(node.left, offset)
+        return PieceSplit(split.before, joined(split.after, piece, node.right))
+    }
+    if (offset > end) {
+        val split = splitPieces(node.right, offset - end)
+        return PieceSplit(joined(node.left, piece, split.before), split.after)
+    }
+    val cut = piece.start + offset - start
+    val before = if (cut == piece.start)
+        blackRoot(node.left)
+    else
+        joined(node.left, TextPiece(piece.chunk, piece.start, cut), None)
+    val after = if (cut == piece.end)
+        blackRoot(node.right)
+    else
+        joined(None, TextPiece(piece.chunk, cut, piece.end), node.right)
+    return PieceSplit(before, after)
+}
+
+internal fun concatPieces(left: PieceNode?, right: PieceNode?): PieceNode? {
+    var last = left ?: return right
+    var first = right ?: return left
+    while (true) {
+        val next = last.right ?: break;
+        last = next
+    }
+    while (true) {
+        val next = first.left ?: break;
+        first = next
+    }
+    val a = last.piece
+    val b = first.piece
+    val prefix = splitPieces(left, treeMeasure(left).bytes - a.measure.bytes).before
+    if (a.chunk === b.chunk && a.end == b.start) {
+        val suffix = splitPieces(right, b.measure.bytes).after
+        return joined(prefix, TextPiece(a.chunk, a.start, b.end), suffix)
+    }
+    return joined(prefix, a, right)
+}
+
+internal class PieceSplice(val root: PieceNode?, val removed: PieceNode?)
+
+internal fun splicePieces(
+    root: PieceNode?,
+    start: Long,
+    end: Long,
+    inserted: PieceNode?
+): PieceSplice {
+    val from = splitPieces(root, start)
+    val to = splitPieces(from.after, end - start)
+    return PieceSplice(concatPieces(concatPieces(from.before, inserted), to.after), to.before)
+}

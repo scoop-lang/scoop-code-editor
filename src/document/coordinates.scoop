@@ -1,0 +1,120 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+public struct CodePosition(val line: Long, val column: Long)
+
+internal fun treeByte(root: PieceNode?, offset: Long): Byte {
+    var node = root!!
+    var index = offset
+    while (true) {
+        val start = treeMeasure(node.left).bytes
+        val end = start + node.piece.measure.bytes
+        if (index < start)
+            node = node.left!!
+        else if (index < end)
+            return node.piece.chunk.byteAt(node.piece.start + index - start)
+        else {
+            index -= end;
+            node = node.right!!
+        }
+    }
+}
+
+internal fun scalarBoundary(root: PieceNode?, offset: Long): Boolean {
+    val size = treeMeasure(root).bytes
+    return offset >=
+        0L &&
+        offset <=
+        size &&
+        (offset == size || treeByte(root, offset).toInt().and(192) != 128)
+}
+
+internal fun validRange(root: PieceNode?, range: Utf8Range): Boolean = range.start <=
+    range.end &&
+    scalarBoundary(root, range.start) &&
+    scalarBoundary(root, range.end)
+
+private fun prefix(root: PieceNode?, offset: Long): TextMeasure {
+    val node = root ?: return emptyMeasure()
+    if (offset == node.measure.bytes) return node.measure
+    val left = treeMeasure(node.left)
+    if (offset <= left.bytes) return prefix(node.left, offset)
+    val p = node.piece
+    val inside = offset - left.bytes
+    if (inside < p.measure.bytes) return left.followedBy(p.chunk.measure(p.start, p.start + inside))
+    return left.followedBy(p.measure).followedBy(prefix(node.right, inside - p.measure.bytes))
+}
+
+private fun lineStart(root: PieceNode?, line: Long): Long {
+    if (line < 0L || line > treeMeasure(root).breaks)
+        throw IllegalArgumentException(Some("line outside document"))
+    if (line == 0L) return 0L
+    var node = root!!
+    var before = emptyMeasure()
+    var afterLF = false
+    while (true) {
+        val left = before.followedBy(treeMeasure(node.left))
+        val p = node.piece
+        if (left.completed(p.measure.startsLF) >= line) {
+            afterLF = p.measure.startsLF
+            node = node.left!!
+        } else {
+            val right = node.right
+            val nextLF = right?.measure?.startsLF ?: afterLF
+            val after = left.followedBy(p.measure)
+            if (after.completed(nextLF) >= line) {
+                var low = p.start + 1L
+                var high = p.end
+                while (low < high) {
+                    val mid = low + (high - low) / 2L
+                    val count = left
+                        .followedBy(p.chunk.measure(p.start, mid))
+                        .completed(p.chunk.byteAt(mid).toInt() == 10)
+                    if (count >= line) high = mid else low = mid + 1L
+                }
+                return left.bytes + low - p.start
+            }
+            before = after
+            node = right!!
+        }
+    }
+}
+
+internal fun treeLineRange(root: PieceNode?, line: Long, includeBreak: Boolean): Utf8Range {
+    val start = lineStart(root, line)
+    val total = treeMeasure(root)
+    if (line == total.breaks) return Utf8Range(start, total.bytes)
+    var end = lineStart(root, line + 1L)
+    if (!includeBreak) {
+        end -= 1L
+        if (end >
+            start &&
+            treeByte(root, end).toInt() ==
+            10 &&
+            treeByte(root, end - 1L).toInt() ==
+            13
+        )
+            end -= 1L
+    }
+    return Utf8Range(start, end)
+}
+
+internal fun treePosition(root: PieceNode?, offset: Long): CodePosition {
+    if (!scalarBoundary(root, offset)) throw IllegalArgumentException(Some("invalid UTF-8 offset"))
+    val measured = prefix(root, offset)
+    val nextLF = offset < treeMeasure(root).bytes && treeByte(root, offset).toInt() == 10
+    val line = measured.completed(nextLF)
+    val column = offset - lineStart(root, line) - if (measured.endsCR && nextLF) 1L else 0L
+    return CodePosition(line, column)
+}
+
+internal fun treeOffset(root: PieceNode?, position: CodePosition): Long {
+    val range = treeLineRange(root, position.line, false)
+    if (position.column < 0L || position.column > range.end - range.start)
+        throw IllegalArgumentException(Some("column outside line"))
+    val offset = range.start + position.column
+    if (!scalarBoundary(root, offset))
+        throw IllegalArgumentException(Some("column splits UTF-8 scalar"))
+    return offset
+}

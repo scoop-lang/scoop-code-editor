@@ -1,0 +1,90 @@
+package scoop.ui.editor
+
+import scoop.test.*
+import scoop.window.Utf8Range
+import scoop.text.repeat
+
+@Test
+private class CodeDocumentTests {
+    @Test
+    fun mixedLinesAndByteCoordinates() {
+        val doc = CodeDocument("中\r\n🙂\rX\n")
+        assertEquals(4L, doc.lineCount)
+        assertEquals(12L, doc.byteLength)
+        assertEquals("中", doc.read(doc.lineRange(0L)))
+        assertEquals("🙂\r", doc.read(doc.lineRange(1L, true)))
+        assertEquals("", doc.read(doc.lineRange(3L)))
+        assertEquals(0L, doc.positionAt(4L).line)
+        assertEquals(3L, doc.positionAt(4L).column)
+        assertEquals(9L, doc.offsetAt(CodePosition(1L, 4L)))
+        assertFailsWith<IllegalArgumentException> { doc.read(Utf8Range(1L, 3L)) }
+        assertFailsWith<IllegalArgumentException> { doc.offsetAt(CodePosition(1L, 2L)) }
+        assertFailsWith<IllegalArgumentException> { doc.lineRange(4L) }
+        assertEquals(1L, CodeDocument().lineCount)
+    }
+
+    @Test
+    fun boundaryCRLFAndStableSnapshot() {
+        val start = "a".repeat(4095L)
+        val doc = CodeDocument(start + "\r\n🙂")
+        val snapshot = doc.snapshot()
+        assertEquals(2L, doc.lineCount)
+        assertEquals(4097L, doc.lineRange(1L).start)
+        doc.publishRoot(splicePieces(doc.root, 4096L, 4096L, doc.writer.write("插")).root)
+        assertEquals(3L, doc.lineCount)
+        assertEquals("插", doc.read(doc.lineRange(1L)))
+        doc.publishRoot(splicePieces(doc.root, 4096L, 4099L, None).root)
+        assertEquals(2L, doc.lineCount)
+        val out = StringBuilder()
+        snapshot.forEachChunk { chunk -> out.append(chunk) }
+        assertEquals(start + "\r\n🙂", out.toString())
+        assertEquals(0L, snapshot.version)
+        assertEquals(4095L, snapshot.positionAt(4096L).column)
+    }
+
+    @Test
+    fun mixedSplicesStayBalancedAndAgreeWithFlatBytes() {
+        var flat = "abc\r\ndef\nghi\r".repeat(600L)
+        val doc = CodeDocument(flat)
+        var seed = 1337L
+        for (iteration in 0L..<260L) {
+            seed = seed * 48271L % 2147483647L
+            val a = seed % (flat.byteLength + 1L)
+            val length = seed % 11L
+            val b = if (length > flat.byteLength - a) flat.byteLength else a + length
+            val added = when (iteration % 4L) {
+                case 0L -> "\r";
+                case 1L -> "\n";
+                case 2L -> "hello";
+                case _ -> ""
+            }
+            flat = flat.slice(0L, a) + added + flat.slice(b, flat.byteLength)
+            doc.publishRoot(splicePieces(doc.root, a, b, doc.writer.write(added)).root)
+            assertEquals(flat, doc.read(Utf8Range(0L, doc.byteLength)))
+            assertFalse(doc.root?.red ?: false)
+            checkBalance(doc.root)
+            val probe = seed % (flat.byteLength + 1L)
+            val position = doc.positionAt(probe)
+            val folded = probe >
+                0L &&
+                probe <
+                flat.byteLength &&
+                flat.slice(probe - 1L, probe + 1L) ==
+                "\r\n"
+            assertEquals(if (folded) probe - 1L else probe, doc.offsetAt(position))
+        }
+    }
+}
+
+private fun checkBalance(root: PieceNode?): Long {
+    val n = root ?: return 0L
+    if (n.red) {
+        assertFalse(n.left?.red ?: false);
+        assertFalse(n.right?.red ?: false)
+    }
+    val left = checkBalance(n.left)
+    assertEquals(left, checkBalance(n.right))
+    val height = left + if (n.red) 0L else 1L
+    assertEquals(height, n.blackHeight)
+    return height
+}

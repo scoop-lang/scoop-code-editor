@@ -1,0 +1,95 @@
+package scoop.ui.editor
+
+import scoop.window.Utf8Range
+
+private fun visitPieces(
+    root: PieceNode?,
+    start: Long,
+    end: Long,
+    visit: (TextChunk, Long, Long) -> Unit
+) {
+    val node = root ?: return
+    if (end <= start) return
+    val left = treeMeasure(node.left).bytes
+    val right = left + node.piece.measure.bytes
+    if (start < left) visitPieces(node.left, start, if (end < left) end else left, visit)
+    if (end > left && start < right) {
+        val a = if (start > left) start - left else 0L
+        val b = if (end < right) end - left else right - left
+        visit(node.piece.chunk, node.piece.start + a, node.piece.start + b)
+    }
+    if (end > right)
+        visitPieces(node.right, if (start > right) start - right else 0L, end - right, visit)
+}
+
+internal fun treeRead(root: PieceNode?, range: Utf8Range): String {
+    if (!validRange(root, range)) throw IllegalArgumentException(Some("invalid UTF-8 range"))
+    val output = MutableArray<Byte>(range.end - range.start) { _ -> 0.toByte() }
+    val cursor = WriteCursor()
+    visitPieces(root, range.start, range.end) { chunk, start, end ->
+        for (i in start..<end) {
+            output[cursor.offset] = chunk.byteAt(i);
+            cursor.offset += 1L
+        }
+    }
+    // Both endpoints and all original strings are valid UTF-8.
+    @Unsafe {
+        return String.fromUtf8Unchecked(output)
+    }
+}
+
+private class WriteCursor {
+    internal var offset: Long = 0L
+}
+
+public class CodeSnapshot internal constructor(
+    internal val root: PieceNode?,
+    public val version: Long
+) {
+    public val byteLength: Long get() = treeMeasure(root).bytes
+    public val lineCount: Long get() = treeMeasure(root).breaks + 1L
+    public fun read(range: Utf8Range): String = treeRead(root, range)
+    public fun lineRange(line: Long, includeBreak: Boolean = false): Utf8Range = treeLineRange(
+        root,
+        line,
+        includeBreak
+    )
+    public fun positionAt(offset: Long): CodePosition = treePosition(root, offset)
+    public fun offsetAt(position: CodePosition): Long = treeOffset(root, position)
+
+    public fun forEachChunk(visit: (String) -> Unit) {
+        visitPieces(root, 0L, byteLength) { chunk, start, end ->
+            val bytes = Array<Byte>(end - start) { i -> chunk.byteAt(start + i) }
+            @Unsafe {
+                visit(String.fromUtf8Unchecked(bytes))
+            }
+        }
+    }
+}
+
+public class CodeDocument public constructor(text: String = "") {
+    internal val writer = PieceWriter()
+    internal var root: PieceNode? = writer.write(text)
+    private var revision: Long = 0L
+    public val version: Long get() = revision
+    public val byteLength: Long get() = treeMeasure(root).bytes
+    public val lineCount: Long get() = treeMeasure(root).breaks + 1L
+    public fun read(range: Utf8Range): String = treeRead(root, range)
+    public fun lineRange(line: Long, includeBreak: Boolean = false): Utf8Range = treeLineRange(
+        root,
+        line,
+        includeBreak
+    )
+    public fun positionAt(offset: Long): CodePosition = treePosition(root, offset)
+    public fun offsetAt(position: CodePosition): Long = treeOffset(root, position)
+
+    public fun snapshot(): CodeSnapshot {
+        writer.seal()
+        return CodeSnapshot(root, version)
+    }
+
+    internal fun publishRoot(next: PieceNode?) {
+        root = next;
+        revision += 1L
+    }
+}

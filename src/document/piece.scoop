@@ -1,0 +1,122 @@
+package scoop.ui.editor
+
+internal struct TextMeasure(
+    val bytes: Long,
+    val breaks: Long,
+    val startsLF: Boolean,
+    val endsCR: Boolean
+) {
+    internal fun followedBy(next: TextMeasure): TextMeasure {
+        if (bytes == 0L) return next
+        if (next.bytes == 0L) return this
+        val shared = if (endsCR && next.startsLF) 1L else 0L
+        return TextMeasure(bytes + next.bytes, breaks + next.breaks - shared, startsLF, next.endsCR)
+    }
+
+    internal fun completed(nextStartsLF: Boolean): Long = breaks -
+        if (endsCR && nextStartsLF) 1L else 0L
+}
+
+internal fun emptyMeasure(): TextMeasure = TextMeasure(0L, 0L, false, false)
+
+internal class TextChunk(val capacity: Long) {
+    private val bytes = MutableArray<Byte>(capacity) { _ -> 0.toByte() }
+    private val breakStarts = ArrayList<Long>()
+    internal var used: Long = 0L
+
+    internal fun byteAt(offset: Long): Byte = bytes[offset]
+
+    internal fun append(source: Array<Byte>, start: Long, end: Long) {
+        for (i in start..<end) {
+            val value = source[i]
+            if (value.toInt() ==
+                13 ||
+                (value.toInt() == 10 && (used == 0L || bytes[used - 1L].toInt() != 13))
+            ) {
+                breakStarts.add(used)
+            }
+            bytes[used] = value
+            used += 1L
+        }
+    }
+
+    private fun breaksBefore(end: Long): Long {
+        var low = 0L
+        var high = breakStarts.size
+        while (low < high) {
+            val mid = low + (high - low) / 2L
+            if (breakStarts[mid] < end) low = mid + 1L else high = mid
+        }
+        return low
+    }
+
+    internal fun measure(start: Long, end: Long): TextMeasure {
+        if (start == end) return emptyMeasure()
+        val startsLF = bytes[start].toInt() == 10
+        val splitCRLF = start > 0L && startsLF && bytes[start - 1L].toInt() == 13
+        return TextMeasure(
+            end - start,
+            breaksBefore(end) - breaksBefore(start) + if (splitCRLF) 1L else 0L,
+            startsLF, bytes[end - 1L].toInt() == 13
+        )
+    }
+}
+
+internal class TextPiece(val chunk: TextChunk, val start: Long, val end: Long) {
+    internal val measure: TextMeasure = chunk.measure(start, end)
+}
+
+internal class PieceWriter {
+    private var tail: TextChunk? = None
+
+    internal fun seal() {
+        tail = None
+    }
+
+    internal fun write(text: String): PieceNode? {
+        if (text.byteLength == 0L) return None
+        val bytes = text.toByteArray()
+        val pieces = ArrayList<TextPiece>()
+        var at = 0L
+        while (at < bytes.size) {
+            val chunk = tail ?: TextChunk(4096L)
+            val room = chunk.capacity - chunk.used
+            var end = if (room < bytes.size - at) at + room else bytes.size
+            while (end > at && end < bytes.size && bytes[end].toInt().and(192) == 128)
+                end -= 1L
+            if (end == at) {
+                tail = None
+            } else {
+                val start = chunk.used
+                chunk.append(bytes, at, end)
+                pieces.add(TextPiece(chunk, start, chunk.used))
+                tail = if (chunk.used == chunk.capacity || end < bytes.size) None else Some(chunk)
+                at = end
+            }
+        }
+        var redLevel = 0L
+        var remaining = pieces.size
+        while (remaining > 0L) {
+            remaining = (remaining - 1L) / 2L;
+            redLevel += 1L
+        }
+        return buildPieces(pieces, 0L, pieces.size, 0L, redLevel)
+    }
+}
+
+private fun buildPieces(
+    pieces: List<TextPiece>,
+    start: Long,
+    end: Long,
+    depth: Long,
+    redLevel: Long
+): PieceNode? {
+    if (start == end) return None
+    val mid = start + (end - start - 1L) / 2L
+    return Some(
+        PieceNode(
+            depth == redLevel, buildPieces(pieces, start, mid, depth + 1L, redLevel),
+            pieces[mid], buildPieces(pieces, mid + 1L, end, depth + 1L, redLevel)
+        )
+    )
+}
