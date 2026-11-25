@@ -1,6 +1,6 @@
 # Scoop 原生代码编辑器组件设计
 
-2026-11-26 · 设计草案。文中的 `CodeDocument`、`CodeEditorState` 和 `codeEditor` 等名称均为拟议接口。
+2026-11-26。组件的公开行为见[接口规范](SPEC.md)，本机实测见[性能记录](PERFORMANCE.md)。
 
 宿主创建一份文档，可以把它放进两个编辑视图。左边编辑时，右边看到同一笔正文变化，两个视图各自保留选区和阅读位置。宿主还可以只用公开接口添加查找框、匹配高亮和“全部替换”。这两个场景决定首版需要怎样的存储、绘制、命令和扩展接口。
 
@@ -8,7 +8,7 @@
 
 ## 1. 组件边界与所有权
 
-建议用一个普通库 Cone `scoop.ui.editor` 承载组件。**正文编辑区从 `scoop.ui.Element` 起独立实现**，自有文档、视图、编辑命令和输入法适配器。宿主提供初始文本，决定文件读写和文档身份。`codeEditor(state)` 返回可放进任意布局的 `View`。首版提供原生文本编辑、行号、水平滚动、可选软换行、多选区批量操作、撤销重做、范围装饰和查找替换。Diff、折叠、Minimap 和语言服务留给后续独立需求。
+组件位于独立的库 Cone `scoop.ui.editor`。**正文编辑区从 `scoop.ui.Element` 起独立实现**，自有文档、视图、编辑命令和输入法适配器。宿主提供初始文本，决定文件读写和文档身份。`codeEditor(state)` 返回可放进任意布局的 `View`。首版提供原生文本编辑、行号、水平滚动、可选软换行、多选区批量操作、撤销重做、范围装饰和查找替换。Diff、折叠、Minimap 和语言服务留给后续独立需求。
 
 | 对象 | 拥有的状态 | 生命周期 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 | `CodeEditorState(document)` | 一个视图的方向选区与主选区、阅读锚点、折行设置、动作与视图级装饰 | 绑定一份文档，可跨卸载保留。两个视图各建一个 state。`close()` 解除它的文档订阅和登记 |
 | 已挂载的编辑器 `Element` | 焦点、输入法连接与局部输入片段、滚动视口、当前排版、已呈现的屏幕几何和子 View | 随挂载建立与释放。重新绑定 state 时先结束原输入会话，再接入新文档 |
 
-宿主嵌入双视图的拟议写法如下。每个视图各有一份 `CodeEditorState`，同一 state 同时只挂载一处。
+双视图宿主为每个视图持有独立的 `CodeEditorState`，同一 state 同时只挂载一处。
 
 ```kotlin
 class SplitEditor(scope: ComponentScope): Component(scope) {
@@ -24,9 +24,13 @@ class SplitEditor(scope: ComponentScope): Component(scope) {
     private val left = scope.resource { CodeEditorState(document) }
     private val right = scope.resource { CodeEditorState(document) }
 
-    public override fun render(): View = row {
-        item(codeEditor(left)) { grow = 1.0 }
-        item(codeEditor(right)) { grow = 1.0 }
+    public override fun render(): View {
+        val first = codeEditor(left)
+        val second = codeEditor(right)
+        return row {
+            item(first) { grow = 1.0 }
+            item(second) { grow = 1.0 }
+        }
     }
 }
 ```
@@ -41,7 +45,7 @@ class SplitEditor(scope: ComponentScope): Component(scope) {
 
 块保存换行位置，树节点汇总子树字节数和逻辑换行数。正文原样保留 LF、CRLF、单 CR 及混合换行。合并相邻子树时，左侧末字节为 CR 且右侧首字节为 LF，要把两次计数合为一次。拆分、拼接和撤销都按这条规则更新受影响的树路径。按行或偏移定位先下降树，再查块内索引。读取长范围的成本还包括遍历所跨片段和输出这些字节。
 
-| 拟议入口 | 约定 |
+| 公开入口 | 约定 |
 | --- | --- |
 | `byteLength`、`lineCount`、`version` | 空文档有一行。尾部换行产生最后一个空行。正文成功变化一次，版本推进一次，包括撤销和重做 |
 | `read(range)`、`lineRange(line, includeBreak)` | `Utf8Range` 是半开字节区间。`lineRange` 可取行内容或连同行尾。只物化调用方请求的范围 |
@@ -144,7 +148,7 @@ fun replaceAll(state: CodeEditorState, query: String, replacement: String): Code
 
 ## 7. 实施顺序与验收
 
-每批实施前先将该批公开合同纳入组件所属规范。只有实际调整底层公开接口时才同步 Window、Graphics 或 UI 规范。以下是拟验收场景。
+每批实施前先将该批公开合同纳入组件所属规范。只有实际调整底层公开接口时才同步 Window、Graphics 或 UI 规范。验收场景如下。
 
 | 批次 | 可使用的结果 | 关键验证 |
 | --- | --- | --- |
