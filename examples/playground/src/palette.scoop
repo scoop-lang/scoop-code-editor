@@ -1,0 +1,82 @@
+package scoop.examples.editor
+
+import scoop.graphics.Color
+import scoop.regex.Regex
+import scoop.text.*
+import scoop.ui.editor.CodeSnapshot
+import scoop.window.Utf8Range
+
+internal val sampleSource = """package samples.coast
+
+struct Swatch(val name: String, val hex: String)
+
+fun coastalPalette(): Array<Swatch> {
+    return [
+        Swatch("海松", "#55A69B"),
+        Swatch("沙丘", "#D69A52"),
+        Swatch("珊瑚", "#D88876"),
+        Swatch("暮蓝", "#5976A")
+    ]
+}
+
+fun printPalette(colors: Array<Swatch>) {
+    for (color in colors) {
+        println(color.name + "  " + color.hex)
+    }
+}
+
+fun main() {
+    printPalette(coastalPalette())
+}
+"""
+
+internal struct PaletteEntry(
+    val name: String,
+    val value: String,
+    val nameQuote: Long,
+    val hex: Utf8Range,
+    val color: Color?
+)
+
+private fun readColor(value: String): Color? {
+    if (value.byteLength != 7L || !value.startsWith("#")) return None
+    val rgb = value.substring(1L).hexToByteArrayOrNone() ?: return None
+    return Some(
+        Color(
+            rgb[0L].toUByte().toDouble() / 255.0,
+            rgb[1L].toUByte().toDouble() / 255.0,
+            rgb[2L].toUByte().toDouble() / 255.0
+        )
+    )
+}
+
+// Match the sample's single-line Swatch("name", "hex") calls.
+internal class PaletteReader : Closeable {
+    private val call = Regex(
+        "^[ \\t]*Swatch\\([ \\t]*\"([^\"\\\\]*)\"[ \\t]*,[ \\t]*\"([^\"\\\\]*)\"[ \\t]*\\)"
+    )
+    fun read(snapshot: CodeSnapshot): Array<PaletteEntry> {
+        val entries = ArrayList<PaletteEntry>()
+        for (i in 0L..<snapshot.lineCount) {
+            val row = snapshot.lineRange(i)
+            val source = snapshot.read(row)
+            val match = call.find(source) ?: continue
+            val name = match.groups[1L]!!
+            val hex = match.groups[2L]!!
+            // Regex ranges count scalars. The public editor API takes UTF-8 byte offsets.
+            val nameStart = row.start + source.substring(0L, name.range.start).byteLength
+            val hexStart = row.start + source.substring(0L, hex.range.start).byteLength
+            entries
+                .add(
+                    PaletteEntry(
+                        name.value, hex.value, nameStart - 1L,
+                        Utf8Range(hexStart, hexStart + hex.value.byteLength), readColor(hex.value)
+                    )
+                )
+        }
+        return entries.toArray()
+    }
+    public override fun close() {
+        call.close()
+    }
+}

@@ -1,0 +1,145 @@
+package scoop.examples.editor
+
+import scoop.graphics.text.*
+import scoop.text.toString
+import scoop.ui.state
+import scoop.ui.editor.*
+import scoop.window.Utf8Range
+
+internal class PlaygroundSession : Closeable {
+    val document = CodeDocument(sampleSource, Some(scoopCodeLanguage()))
+    val primary = CodeEditorState(document)
+    val mirror = CodeEditorState(document)
+    val problems = state(0L)
+    val location = state("")
+    val undoAvailable = state(false)
+    val redoAvailable = state(false)
+
+    private val reader = PaletteReader()
+    private val hints = primary.inlayHints()
+    private val marks = primary.decorations()
+    private val lenses = primary.codeLenses()
+    private val diagnostics = document.diagnostics("色板")
+    private val nameHint = CodeInlayText("name: ")
+    private val hexHint = CodeInlayText("hex: ")
+    val palette = state<Array<PaletteEntry>>([])
+    private val editListener = document.onChange { _ -> refresh() }
+    private val selectionListener = primary.onSelectionChange { _ -> updateLocation() }
+
+    init {
+        primary.options = paneOptions(false)
+        mirror.options = paneOptions(true)
+        mirror.readOnly = true
+        restoreMirrorFold()
+        refresh()
+    }
+
+    private fun restoreMirrorFold() {
+        mirror.folding.unfoldAll()
+        val helper = findLiteral(document.snapshot(), "fun printPalette(")
+        if (helper.size > 0L) mirror.folding.fold(document.positionAt(helper[0L].start).line)
+    }
+
+    private fun refresh() {
+        val snapshot = document.snapshot()
+        val colors = reader.read(snapshot)
+        palette.value = colors
+        val labels = ArrayList<CodeInlayHint>()
+        val decorations = ArrayList<CodeDecoration>()
+        val warnings = ArrayList<CodeDiagnostic>()
+        for (entry in colors) {
+            val r = entry.hex
+            labels.add(CodeInlayHint(entry.nameQuote, CodeInlaySide.Before, nameHint))
+            labels.add(CodeInlayHint(r.start - 1L, CodeInlaySide.Before, hexHint))
+            when (entry.color) {
+                case Some(val color) -> {
+                    val glyph = CodeGutterGlyph(
+                        entry.name, CodeGlyphShape.Circle, color,
+                        Some({ view, _ -> selectColor(view, r) })
+                    )
+                    decorations.add(CodeDecoration(r, CodeDecorationStyle(glyph = Some(glyph))))
+                }
+
+                case None ->
+                    warnings
+                        .add(
+                            CodeDiagnostic(
+                                r, CodeDiagnosticSeverity.Warning,
+                                "色值需要 # 和六位十六进制数字，例如 #5976A8。"
+                            )
+                        )
+            }
+        }
+        hints.set(snapshot.version, labels)
+        marks.set(decorations)
+        diagnostics.set(snapshot.version, warnings)
+        val actions = ArrayList<CodeLens>()
+        if (colors.size > 0L) {
+            val action = CodeLensAction(f"批量编辑 ${colors.size} 个色值") { _ -> selectColors() }
+            actions.add(CodeLens(colors[0L].hex, CodeLensContent.Ready(action)))
+        }
+        lenses.set(snapshot.version, actions)
+        problems.value = warnings.size
+        undoAvailable.value = primary.canUndo
+        redoAvailable.value = primary.canRedo
+        updateLocation()
+    }
+
+    fun selectColors() {
+        val colors = palette.value
+        if (colors.size == 0L) return
+        val selections = Array<CodeSelection>(colors.size) { i ->
+            val r = colors[i].hex
+            CodeSelection.offsets(r.start, r.end)
+        }
+        primary.setSelections(selections)
+        primary.revealRange(colors[0L].hex)
+        primary.requestFocus()
+    }
+
+    fun selectEntry(index: Long) {
+        val entries = palette.value
+        if (index >= 0L && index < entries.size) selectColor(primary, entries[index].hex)
+    }
+
+    private fun selectColor(view: CodeEditorState, range: Utf8Range) {
+        view.setSelections([CodeSelection.offsets(range.start, range.end)])
+        view.revealRange(range)
+        view.requestFocus()
+    }
+
+    private fun updateLocation() {
+        val selections = primary.selections
+        val offset = selections.primary.cursor.byteOffset
+        val line = document.positionAt(offset).line
+        val start = document.lineRange(line).start
+        val column = document.read(Utf8Range(start, offset)).charLength + 1L
+        val extra = if (selections.values.size > 1L) f"   ·   ${selections.values.size} 个选区" else ""
+        location.value = f"第 ${line + 1L} 行，第 ${column} 列${extra}"
+    }
+
+    fun reset() {
+        primary
+            .executeEdits(
+                document.version,
+                [CodeEdit(Utf8Range(0L, document.byteLength), sampleSource)],
+                Some({ _ -> CodeSelections([CodeSelection.caret(0L)]) })
+            )
+        restoreMirrorFold()
+        primary.folding.unfoldAll()
+        primary.goTo(CodePosition(0L, 0L))
+        primary.requestFocus()
+    }
+
+    public override fun close() {
+        editListener.close()
+        selectionListener.close()
+        lenses.close()
+        hints.close()
+        marks.close()
+        diagnostics.close()
+        reader.close()
+        mirror.close()
+        primary.close()
+    }
+}

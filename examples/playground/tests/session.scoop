@@ -1,0 +1,68 @@
+package scoop.examples.editor
+
+import scoop.test.*
+import scoop.ui.editor.*
+import scoop.window.Utf8Range
+
+@Test
+private class PlaygroundTests {
+    @Test
+    fun selectingColorsAndUndoingOneEditUpdatesBothPanesAndClearsDiagnostics() {
+        PlaygroundSession()
+            .use { s ->
+                assertEquals(4L, s.palette.value.size)
+                assertEquals(1L, s.problems.value)
+                assertTrue(s.mirror.readOnly)
+                assertTrue(s.mirror.folding.collapsedRanges().size > 0L)
+                assertEquals(0L, s.primary.folding.collapsedRanges().size)
+                s.selectEntry(3L)
+                assertEquals("#5976A", s.primary.selectedText())
+                assertEquals(
+                    1L,
+                    s.document.diagnosticsAt(s.primary.selections.primary.range.start).size
+                )
+                s.selectColors()
+                assertEquals(4L, s.primary.selections.values.size)
+                assertEquals(CodeEditResult.Applied, s.primary.typeText("#"))
+                assertEquals(4L, s.problems.value)
+                for (key in ["F", "A", "7", "8", "4", "0"])
+                    assertEquals(CodeEditResult.Applied, s.primary.typeText(key))
+                assertEquals(0L, s.problems.value)
+                assertTrue(s.undoAvailable.value)
+                for (item in s.palette.value) {
+                    assertEquals("#FA7840", s.mirror.document.read(item.hex))
+                }
+                assertEquals(CodeEditResult.Applied, s.primary.undo())
+                assertEquals(1L, s.problems.value)
+                assertEquals(4L, s.primary.selections.values.size)
+                assertTrue(s.redoAvailable.value)
+                assertEquals(CodeEditResult.Applied, s.primary.redo())
+                assertEquals(0L, s.problems.value)
+                assertEquals("#FA7840", s.palette.value[3L].value)
+            }
+    }
+
+    @Test
+    fun sourceOffsetsSurviveUnicodeCrLfAndUndoableSampleReset() {
+        PlaygroundSession()
+            .use { s ->
+                val replacement = "    Swatch(\"海🌊\", \"#0088FF\")\r\n    Swatch(\"空\", \"\")"
+                s.primary.selectAll()
+                assertEquals(CodeEditResult.Applied, s.primary.typeText(replacement))
+                assertEquals(1L, s.problems.value)
+                s.selectEntry(0L)
+                assertEquals("#0088FF", s.primary.selectedText())
+                s.selectEntry(1L)
+                assertEquals("", s.primary.selectedText())
+                assertEquals(CodeEditResult.Applied, s.primary.typeText("#AABBCC"))
+                assertEquals(0L, s.problems.value)
+                s.primary.selectAll()
+                assertEquals(CodeEditResult.Applied, s.primary.typeText("unrelated"))
+                assertEquals(0L, s.palette.value.size)
+                s.reset()
+                assertEquals(sampleSource, s.document.read(Utf8Range(0L, s.document.byteLength)))
+                assertEquals(CodeEditResult.Applied, s.primary.undo())
+                assertEquals("unrelated", s.document.read(Utf8Range(0L, s.document.byteLength)))
+            }
+    }
+}

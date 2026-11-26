@@ -1,0 +1,162 @@
+package scoop.examples.editor
+
+import scoop.graphics.*
+import scoop.icons.lucide.file as fileIcon
+import scoop.icons.lucide.folder as folderIcon
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.editor.*
+import scoop.ui.style.Insets
+
+internal class Playground(private val session: PlaygroundSession, scope: ComponentScope) :
+    Component(scope) {
+    private var compare by state(false)
+    private val source = editorPane("palette.scoop", session.primary, false)
+    private val comparison = editorPane("只读对照", session.mirror, true)
+    private val inspector = component(
+        session,
+        { props, mount -> PaletteInspector(props.value, mount) }
+    )
+
+    public override fun render(): View {
+        val showingSource = compare
+        val left = source
+        val right = if (showingSource) comparison else inspector
+        val panes = row {
+            alignment = CrossAlignment.Stretch
+            item(left) {
+                basis = FlexBasis.Fixed(0.0);
+                grow = if (showingSource) 1.12 else 1.0
+            }
+            separator {
+                axis = FlexAxis.Vertical;
+                color = Some(edge)
+            }
+            item(right) {
+                basis = FlexBasis.Fixed(if (showingSource) 0.0 else 290.0)
+                grow = if (showingSource) 1.0 else 0.0
+                shrink = 0.0
+            }
+        }
+        val header = toolbar(showingSource)
+        val footer = statusBar()
+        return surfaceFill(
+            column {
+                alignment = CrossAlignment.Stretch
+                add(header)
+                separator { color = Some(edge) }
+                item(panes) {
+                    basis = FlexBasis.Fixed(0.0);
+                    grow = 1.0
+                }
+                separator { color = Some(edge) }
+                add(footer)
+            },
+            canvas
+        )
+    }
+
+    private fun toolbar(showingSource: Boolean): View {
+        val s = session
+        val switchLabel = if (showingSource) "返回色板" else "对照视图"
+        val switchPane: () -> Unit = {
+            compare = !compare
+            s.primary.requestFocus()
+        }
+        val identity = row {
+            spacing = 10.0
+            alignment = CrossAlignment.Center
+            icon(folderIcon) {
+                size = 19.0;
+                color = Some(mint)
+            }
+            add(styledLabel("海岸色板", 19.0, ink, 620))
+        }
+        return surfaceFill(
+            row {
+                padding = Insets(22.0, 10.0, 16.0, 10.0)
+                alignment = CrossAlignment.Center
+                spacing = 6.0
+                item(identity) { grow = 1.0 }
+                button(
+                    "撤销",
+                    {
+                        s.primary.undo();
+                        s.primary.requestFocus()
+                    }
+                ) {
+                    enabled = s.undoAvailable.value;
+                    variant = ButtonVariant.Ghost;
+                    size = ButtonSize.Sm
+                }
+                button(
+                    "重做",
+                    {
+                        s.primary.redo();
+                        s.primary.requestFocus()
+                    }
+                ) {
+                    enabled = s.redoAvailable.value;
+                    variant = ButtonVariant.Ghost;
+                    size = ButtonSize.Sm
+                }
+                button("查找", { s.primary.find.openPanel() }) {
+                    variant = ButtonVariant.Outline;
+                    size = ButtonSize.Sm
+                }
+                button(switchLabel, switchPane) {
+                    variant = ButtonVariant.Secondary;
+                    size = ButtonSize.Sm
+                }
+            },
+            chrome
+        )
+    }
+
+    private fun statusBar(): View {
+        val s = session
+        val location = styledLabel(s.location.value, 12.0, muted)
+        return surfaceFill(
+            row {
+                padding = Insets(18.0, 3.0, 12.0, 3.0)
+                alignment = CrossAlignment.Center
+                spacing = 16.0
+                item(location) { grow = 1.0 }
+                add(styledLabel("Scoop", 12.0, muted))
+                add(styledLabel("UTF-8", 12.0, muted, code = true))
+                button("还原示例", { s.reset() }) {
+                    variant = ButtonVariant.Ghost;
+                    size = ButtonSize.Sm
+                }
+            },
+            chrome
+        )
+    }
+}
+
+private fun editorPane(title: String, state: CodeEditorState, readOnly: Boolean): View {
+    val header = row {
+        alignment = CrossAlignment.Center
+        spacing = 9.0
+        padding = Insets(18.0, 9.0, 16.0, 9.0)
+        icon(fileIcon) {
+            size = 15.0;
+            color = Some(if (readOnly) muted else mint)
+        }
+        add(styledLabel(title, 13.0, ink, 550, code = !readOnly))
+    }
+    val fileHeader = frame(header) {
+        alignment = Alignment(AxisAlignment.Start, AxisAlignment.Center)
+        style { background(Some(Paint(panel))) }
+    }
+    val body = codeEditor(state)
+    return column {
+        alignment = CrossAlignment.Stretch
+        add(fileHeader)
+        separator { color = Some(edge) }
+        item(body) {
+            basis = FlexBasis.Fixed(0.0);
+            grow = 1.0
+        }
+    }
+}

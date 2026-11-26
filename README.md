@@ -2,6 +2,27 @@
 
 `scoop:scoop.ui.editor` 是一个独立的 Scoop 库 Cone。`CodeDocument` 保存 UTF-8 正文和共享撤销历史，`CodeEditorState` 保存一个视图的选区与阅读位置，`codeEditor(state)` 返回可嵌入布局的 `View`。正文由自己的 `Element` 排版、绘制、命中并接收原生输入。
 
+## 运行原生演示
+
+安装带 GUI 组件的 Scoop 工具链后，在仓库根目录运行下面的命令。Windows 使用 `sco run examples/playground --release`。
+
+```sh
+scoop run examples/playground --release
+```
+
+“海岸色板”左侧是可编辑的 Scoop 源码，右侧从当前文档中的 `Swatch("名称", "#RRGGBB")` 行生成色板。点击色板中的任意一行，会选中源码里对应的色值。
+
+![海岸色板原生窗口，左侧是带行内提示和 CodeLens 的源码，右侧是实时色板和诊断](docs/images/playground.png)
+
+- 点 **定位问题**，把暮蓝的 `#5976A` 替换为 `#5976A8`。斜纹色块会变蓝，编辑器里的波浪线和右侧警告一起消失。
+- 点源码第一个色值上方的 **批量编辑 4 个色值**，然后输入一个新色值。四个选区会一起改动，点一次 **撤销** 即可还原。
+- 点 **对照视图**，修改左侧源码，两栏会同步更新。右侧只读，默认折叠了 `printPalette`，两边可以独立折叠和滚动。
+- 点 **查找** 试用正则查找和替换，或用 **还原示例** 重新开始。示例在内存中编辑，还原操作也可以撤销。
+
+完整示例见 [examples/playground](examples/playground)。
+
+## 嵌入编辑器
+
 相邻目录的宿主 Cone 可这样声明依赖。
 
 ```toml

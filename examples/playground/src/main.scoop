@@ -1,0 +1,39 @@
+package scoop.examples.editor
+
+import scoop.ui.*
+import scoop.ui.style.ThemeMode
+import scoop.ui.style.ThemeSource
+import scoop.ui.style.shadcn.shadcnTheme
+import scoop.window.*
+
+fun main() {
+    context(ThemeSource(shadcnTheme(ThemeMode.Dark))) {
+        PlaygroundSession()
+            .use { session ->
+                UiHost(onRootError = { _, error -> throw error }) { host, app, event ->
+                    when (event) {
+                        case Resumed -> {
+                            val window = app
+                                .createWindow(
+                                    windowAttributes {
+                                        title = "海岸色板 · Scoop Code Editor"
+                                        size = LogicalSize(1100.0, 740.0)
+                                        constraints = WindowSizeConstraints(
+                                            min = Some(LogicalSize(760.0, 460.0))
+                                        )
+                                        theme = Some(Theme.Dark)
+                                    }
+                                )
+                            host.attach(window, { scope -> Playground(session, scope) })
+                            window.requestFocus()
+                            app.proxy().post { _ -> session.primary.requestFocus() }
+                        }
+
+                        case Window(_, WindowEvent.CloseRequested) -> app.requestExit()
+                        else -> {}
+                    }
+                }
+                    .use { host -> Application().run(host) }
+            }
+    }
+}

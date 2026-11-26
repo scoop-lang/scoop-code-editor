@@ -1,0 +1,57 @@
+package scoop.examples.editor
+
+import scoop.graphics.*
+import scoop.graphics.text.*
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.editor.*
+
+internal val canvas = Color(0.079, 0.099, 0.119)
+
+internal val panel = Color(0.105, 0.130, 0.150)
+
+internal val chrome = Color(0.125, 0.152, 0.172)
+
+internal val edge = Color(0.213, 0.251, 0.270)
+
+internal val ink = Color(0.91, 0.94, 0.94)
+
+internal val muted = Color(0.64, 0.70, 0.72)
+
+internal val mint = Color(0.48, 0.83, 0.75)
+
+internal val amber = Color(0.96, 0.75, 0.46)
+
+private val mono = ["Menlo", "Cascadia Mono", "DejaVu Sans Mono", "monospace"]
+
+internal fun paneOptions(readOnly: Boolean): CodeEditorOptions {
+    val theme = darkCodeTheme()
+    return CodeEditorOptions(
+        theme = theme, background = if (readOnly) panel else canvas,
+        text = textStyle {
+            families = mono
+            fontSize = 15.0
+            lineHeight = Some(1.48)
+            color = theme.foreground
+        }, softWrap = true, insertSpaces = true, indentGuides = !readOnly
+    )
+}
+
+internal fun styledLabel(
+    value: String,
+    points: Double,
+    tint: Color,
+    weight: Int = 400,
+    code: Boolean = false
+): View = label(value) {
+    style {
+        this.fontSize = Some(points)
+        this.color = Some(tint)
+        this.weight = Some(weight)
+        if (code) this.families = Some(mono)
+    }
+}
+
+internal fun surfaceFill(content: View, tint: Color): View = frame(content) {
+    style { background(Some(Paint(tint))) }
+}

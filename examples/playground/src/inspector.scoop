@@ -1,0 +1,144 @@
+package scoop.examples.editor
+
+import scoop.graphics.*
+import scoop.icons.lucide.triangleAlert
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.component.frame as makeFrame
+import scoop.ui.editor.*
+import scoop.ui.style.*
+
+internal class PaletteInspector(private val session: PlaygroundSession, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View {
+        val inspector = this
+        val editor = session.primary
+        val entries = session.palette.value
+        val count = session.problems.value
+        val content = column {
+            padding = Insets(19.0, 20.0, 19.0, 18.0)
+            alignment = CrossAlignment.Stretch
+            spacing = 12.0
+            add(styledLabel("实时色板", 21.0, ink, 650))
+            if (entries.size == 0L) {
+                add(styledLabel("添加一行 Swatch(\"名称\", \"#RRGGBB\") 即可预览。", 13.0, muted))
+            } else {
+                add(colorStrip(entries))
+                for (i in 0L..<entries.size)
+                    add(inspector.colorRow(entries[i], i))
+            }
+            separator { color = Some(edge) }
+            add(styledLabel("诊断", 15.0, ink, 600))
+            if (count > 0L) {
+                row {
+                    spacing = 8.0
+                    alignment = CrossAlignment.Center
+                    icon(triangleAlert) {
+                        size = 16.0;
+                        color = Some(amber)
+                    }
+                    add(styledLabel(f"${count} 处色值格式错误", 14.0, amber, 550))
+                }
+                add(styledLabel("色值由 # 和六位十六进制数字组成。", 13.0, muted))
+                button(
+                    "定位问题",
+                    {
+                        editor.requestFocus()
+                        editor.nextDiagnostic()
+                    }
+                ) {
+                    variant = ButtonVariant.Outline;
+                    size = ButtonSize.Sm
+                }
+            } else {
+                add(styledLabel("没有色值警告", 13.0, muted))
+            }
+        }
+        return surfaceFill(scrollArea(content), panel)
+    }
+
+    private fun colorRow(entry: PaletteEntry, index: Long): View {
+        val swatch = frame(empty()) {
+            width = Some(11.0);
+            height = Some(11.0)
+            style {
+                background(Some(Paint(entry.color ?: panel)))
+                border(Some(Border.all(1.0, entry.color ?: amber)))
+                corners(Corners.all(3.0))
+            }
+        }
+        val name = styledLabel(entry.name, 14.0, ink, 500)
+        val value = styledLabel(
+            entry.value,
+            12.0,
+            if (entry.color == None) amber else muted,
+            code = true
+        )
+        val content = row {
+            alignment = CrossAlignment.Center
+            spacing = 8.0
+            add(swatch)
+            item(name) { grow = 1.0 }
+            add(value)
+        }
+        return button(content, { session.selectEntry(index) }) {
+            variant = ButtonVariant.Ghost
+            size = ButtonSize.Sm
+            semantics = ComponentSemantics(name = Some(f"定位${entry.name} ${entry.value}"))
+        }
+    }
+}
+
+private fun colorStrip(entries: Array<PaletteEntry>): View = row {
+    alignment = CrossAlignment.Stretch
+    spacing = 2.0
+    for (entry in entries) {
+        val pattern = if (entry.color == None)
+            element({ scope -> MissingColor(scope) })
+        else
+            empty()
+        val tile = makeFrame(pattern) {
+            height = Some(56.0)
+            style {
+                background(Some(Paint(entry.color ?: chrome)))
+                corners(Corners.all(3.0))
+            }
+        }
+        item(tile) {
+            basis = FlexBasis.Fixed(0.0);
+            grow = 1.0
+        }
+    }
+}
+
+private class MissingColor(scope: ComponentScope) : Element<Unit>(scope) {
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        Unit
+    > = LayoutResult(
+        LayoutMetrics(constraints.constrain(Size(constraints.maxWidth ?: 0.0, 56.0))),
+        Unit
+    )
+
+    public override fun scene(context: SceneContext, measured: Unit) {
+        val width = context.size.width
+        val height = context.size.height
+        if (width <= 0.0 || height <= 0.0) return
+        context
+            .draw { layer ->
+                val stroke = Paint(Color(0.46, 0.40, 0.31), strokeWidth = 1.2)
+                var diagonal = 7.0
+                while (diagonal < width + height) {
+                    val left = if (diagonal > height) diagonal - height else 0.0
+                    val right = if (diagonal < width) diagonal else width
+                    layer
+                        .canvas
+                        .drawLine(
+                            Point(left, diagonal - left),
+                            Point(right, diagonal - right),
+                            stroke
+                        )
+                    diagonal += 8.0
+                }
+            }
+    }
+}
