@@ -50,13 +50,12 @@ internal fun paintRange(
     }
 }
 
-internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorInk) {
+internal fun paintGutter(target: Canvas, frame: EditorFrame, ink: EditorInk) {
     val opt = frame.options
-    val size = frame.size
-    context
-        .draw { paint ->
-            val canvas = paint.canvas
-            canvas.drawRect(Rect(0.0, 0.0, size.width, size.height), Paint(color = opt.background))
+    val width = if (frame.gutter < frame.size.width) frame.gutter else frame.size.width
+    target
+        .withState { canvas ->
+            canvas.clipRect(Rect(0.0, 0.0, width, frame.size.height))
             for (row in frame.rows) {
                 val lineStyles = ink.decorationsFor(row.range)
                 when (val mark = firstMarker(row, lineStyles)) {
@@ -116,6 +115,17 @@ internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorIn
                     case None -> {}
                 }
             }
+        }
+}
+
+internal fun drawEditor(context: SceneContext, frame: EditorFrame, ink: EditorInk) {
+    val opt = frame.options
+    val size = frame.size
+    context
+        .draw { paint ->
+            val canvas = paint.canvas
+            canvas.drawRect(Rect(0.0, 0.0, size.width, size.height), Paint(color = opt.background))
+            paintGutter(canvas, frame, ink)
         }
     context
         .withState { body ->

@@ -139,6 +139,16 @@ private class NativeWindowProbe {
                 assertEquals(CodeEditResult.Applied, right.undo())
                 assertEquals(original, doc.read(Utf8Range(0L, doc.byteLength)))
                 right.options = CodeEditorOptions(softWrap = true)
+                right
+                    .decorations()
+                    .set(
+                        [
+                            CodeDecoration(
+                                Utf8Range(0L, doc.byteLength),
+                                CodeDecorationStyle(gutter = Some(Color.Black))
+                            )
+                        ]
+                    )
                 right.revealRange(doc.lineRange(180L))
                 stage = 2
             }
@@ -148,6 +158,7 @@ private class NativeWindowProbe {
                 assertEquals(0.0, left.scroll.offset.y)
                 assertTrue(right.visibleRanges()[0L].start > 0L)
                 assertTrue(right.caretRect(TextPosition(0L)) == None)
+                assertGutterClipped(right.mounted!!)
                 finished = true
                 app.requestExit()
             }
@@ -155,6 +166,42 @@ private class NativeWindowProbe {
             else -> {}
         }
     }
+}
+
+private fun assertGutterClipped(ink: EditorInk) {
+    val frame = ink.currentFrame()!!
+    val pad = 40
+    val height = frame.size.height.toInt()
+    val width = frame.gutter.toInt() + 1
+    assertTrue(frame.rows[0L].top < frame.origin.y)
+    assertTrue(frame.rows[frame.rows.size - 1L].top >= frame.origin.y + frame.size.height)
+
+    RasterSurface(width, height + pad * 2)
+        .use { surface ->
+            surface
+                .draw { canvas ->
+                    canvas.clear(Color.Transparent)
+                    canvas.translate(0.0, pad.toDouble())
+                    paintGutter(canvas, frame, ink)
+                }
+            val pixels = surface.readPixels()
+            var hasLineNumbers = false
+            for (y in 0..<surface.height) {
+                // A fractional bottom edge can cover part of one raster pixel.
+                if (y == pad + height && frame.size.height > height.toDouble()) continue
+                val visible = y >= pad && y < pad + height
+                val offset = (y * width * 4).toLong()
+                // The document-wide gutter mark must reach both edges of the viewport.
+                val stripe = pixels[offset + 2L * 4L + 3L]
+                assertEquals(visible, stripe != 0.toByte(), Some(f"gutter mark at y=${y}"))
+                for (x in 4..<width) {
+                    if (pixels[offset + x.toLong() * 4L + 3L] == 0.toByte()) continue
+                    assertTrue(visible, Some(f"line number outside the viewport at (${x}, ${y})"))
+                    hasLineNumbers = true
+                }
+            }
+            assertTrue(hasLineNumbers)
+        }
 }
 
 private class ProbeEditors(private val probe: NativeWindowProbe, scope: ComponentScope) :
