@@ -16,6 +16,50 @@ internal class ReadingAnchor(
 
 internal fun positive(value: Double): Double = if (value > 1.0) value else 1.0
 
+private struct ViewportCaret(
+    val visual: Long,
+    val x: Double,
+    val localY: Double,
+    val height: Double
+) {
+    fun top(index: ItemExtentIndex): Double = index.prefix(visual) + localY
+}
+
+private struct ViewportRows(val scroll: ScrollLayout, val first: Long, val end: Long)
+
+private fun firstLayoutRow(index: ItemExtentIndex, y: Double): Long {
+    val row = index.indexAt(if (y > 0.0) y else 0.0)
+    return if (row > 0L) row - 1L else 0L
+}
+
+private fun measureViewportRows(
+    index: ItemExtentIndex,
+    height: Double,
+    overscan: Double,
+    measureRow: (Long) -> Unit,
+    layoutScroll: () -> ScrollLayout
+): ViewportRows {
+    var scroll = layoutScroll()
+    while (true) {
+        val y = scroll.presentationOffset.y
+        val first = firstLayoutRow(index, y)
+        var end = first
+        while (end < index.count && (end == first || index.prefix(end) <= y + height + overscan)) {
+            measureRow(end)
+            end += 1L
+        }
+        // Measuring wrapped lines can move the reading anchor or the bottom scroll limit.
+        scroll = layoutScroll()
+        val finalY = scroll.presentationOffset.y
+        val finalFirst = firstLayoutRow(index, finalY)
+        val bottom = finalY + height + overscan
+        val last = index.indexAt(if (bottom > 0.0) bottom else 0.0)
+        val finalEnd = if (last < index.count) last + 1L else index.count
+        if (first <= finalFirst && finalEnd <= end)
+            return ViewportRows(scroll, finalFirst, finalEnd)
+    }
+}
+
 internal class CodeLayout(val ink: EditorInk) {
     private var index = ItemExtentIndex(0L, ItemExtent.Variable(20.0))
     private var projection = FoldProjection(0L, [])
@@ -139,6 +183,52 @@ internal class CodeLayout(val ink: EditorInk) {
     }
 
     private fun suffix(line: Long): String = if (projection.endOfFold(line) != None) "  …" else ""
+
+    private fun layoutScroll(
+        size: Size,
+        gutter: Double,
+        pinned: ViewportCaret?,
+        screenY: Double,
+        reveal: ViewportCaret?
+    ): ScrollLayout {
+        val state = ink.editor
+        val scroll = state.scroll
+        var x = scroll.offset.x
+        var y = if (pinned != None) pinned!!.top(index) - screenY else scroll.offset.y
+        when (reveal) {
+            case Some(val caret) -> {
+                val top = caret.top(index)
+                val bottom = top + caret.height
+                if (state.centerReveal)
+                    y = (top + bottom - size.height) / 2.0
+                else if (top < y)
+                    y = top
+                else if (bottom > y + size.height) y = bottom - size.height
+                if (caret.x < x)
+                    x = caret.x
+                else if (caret.x > x + size.width - gutter - 4.0)
+                    x = caret.x - size.width + gutter + 4.0
+            }
+
+            case None -> {}
+        }
+        val adjustment = if (pinned == None && reveal == None)
+            None
+        else
+            Some(
+                ScrollAdjustment(
+                    scroll.requestRevision,
+                    Point(if (x > 0.0) x else 0.0, if (y > 0.0) y else 0.0)
+                )
+            )
+        return ink
+            .bars
+            .layout(
+                size,
+                Size(if (state.options.softWrap) size.width else maximumWidth, index.total),
+                adjustment
+            )
+    }
 
     internal fun <T> withDetachedLine(line: Long, frame: EditorFrame, run: (ScreenRow) -> T): T {
         val r = frame.document.lineRange(line)
@@ -275,138 +365,79 @@ internal class CodeLayout(val ink: EditorInk) {
         fontRevision = fonts.revision
         width = wrap
         ink.projectionChanged = false
-        var x = state.scroll.offset.x
-        var y = state.scroll.offset.y
-        val pinned = anchor
-        var adjustment: ScrollAdjustment? = None
-        val pending = state.reveal
         val scroll = state.scroll
-        val target = when (pending) {
-            case Some(val range) ->
-                Some(doc.positionAt(ink.input.previewMap?.map(range.end) ?: range.end).line)
-            case None -> None
-        }
         val used = ArrayList<ShapedLine>()
+        val measured = HashMap<Long, ShapedLine>()
         val rows = ArrayList<ScreenRow>()
-        var anchorLine = -1L
-        var withinAnchor = 0.0
-        try {
-            if (pinned?.request == Some(scroll.requestRevision) && pending == None) {
-                val a = pinned!!
-                val offset = ink.input.previewMap?.map(a.offset) ?: a.offset
-                anchorLine = folds.line(folds.index(doc.positionAt(offset).line))
-                val r = doc.lineRange(anchorLine)
-                val body = shapeSource(doc, r, anchorLine, opt, wrap, used)
-                try {
-                    val local = if (offset > r.end) r.end - r.start else offset - r.start
-                    withinAnchor = (body.layout.caret(body.display(local, a.affinity))?.y ?: 0.0) -
-                        a.screenY
-                    y = index.prefix(folds.index(anchorLine)) +
-                        (widgets.before[anchorLine] ?: 0.0) +
-                        withinAnchor
-                    adjustment = Some(
-                        ScrollAdjustment(a.request, Point(x, if (y > 0.0) y else 0.0))
-                    )
-                } finally {
-                    body.release()
-                }
-            }
-            when (target) {
-                case Some(val line) -> {
-                    val r = doc.lineRange(line)
-                    val body = shapeSource(doc, r, line, opt, wrap, used)
-                    try {
-                        val h = positive(body.layout.size.height)
-                        index.record(folds.index(line), h + (widgets.zones[line] ?: 0.0))
-                        val measured = body.layout.size.width + gutter + 4.0
-                        if (measured > maximumWidth) maximumWidth = measured
-                        val offset = ink.input.previewMap?.map(pending!!.end) ?: pending!!.end
-                        val local = if (offset > r.end) r.end - r.start else offset - r.start
-                        val caret = body
-                            .layout
-                            .caret(body.display(local))
-                        val top = index.prefix(folds.index(line)) +
-                            (widgets.before[line] ?: 0.0) +
-                            (caret?.y ?: 0.0)
-                        val bottom = top + (caret?.height ?: h)
-                        if (state.centerReveal)
-                            y = (top + bottom - size.height) / 2.0
-                        else if (top < y)
-                            y = top
-                        else if (bottom > y + size.height) y = bottom - size.height
-                        val edge = caret?.x ?: 0.0
-                        if (edge < x)
-                            x = edge
-                        else if (edge > x + size.width - gutter - 4.0)
-                            x = edge - size.width + gutter + 4.0
-                        adjustment = Some(
-                            ScrollAdjustment(
-                                scroll.requestRevision,
-                                Point(if (x > 0.0) x else 0.0, if (y > 0.0) y else 0.0)
-                            )
-                        )
-                    } finally {
-                        body.release()
-                    }
-                }
-
+        fun measureBody(visual: Long): ShapedLine {
+            when (val cached = measured[visual]) {
+                case Some(val body) -> return body
                 case None -> {}
             }
-            var offered = ink.bars.layout(size, Size(maximumWidth, index.total), adjustment)
-            y = offered.presentationOffset.y
-            var visual = index.indexAt(if (y > 0.0) y else 0.0)
-            if (visual > 0L) visual -= 1L
-            while (
-                visual <
-                    folds.count &&
-                    (rows.size == 0L || index.prefix(visual) <= y + size.height + estimate)
-            ) {
+            val line = folds.line(visual)
+            val body = shapeSource(doc, doc.lineRange(line), line, opt, wrap, used)
+            measured.put(visual, body)
+            index.record(visual, positive(body.layout.size.height) + (widgets.zones[line] ?: 0.0))
+            val lineWidth = body.layout.size.width + gutter + 4.0
+            if (lineWidth > maximumWidth) maximumWidth = lineWidth
+            return body
+        }
+        fun locate(original: Long, affinity: TextAffinity): ViewportCaret {
+            val offset = ink.input.previewMap?.map(original) ?: original
+            val visual = folds.index(doc.positionAt(offset).line)
+            val line = folds.line(visual)
+            val r = doc.lineRange(line)
+            val body = measureBody(visual)
+            val local = if (offset > r.end) r.end - r.start else offset - r.start
+            val caret = body.layout.caret(body.display(local, affinity))
+            return ViewportCaret(
+                visual, caret?.x ?: 0.0,
+                (widgets.before[line] ?: 0.0) + (caret?.y ?: 0.0),
+                caret?.height ?: positive(body.layout.size.height)
+            )
+        }
+        try {
+            val held = anchor
+            val pending = state.reveal
+            val pinned = if (held?.request ==
+                Some(scroll.requestRevision) &&
+                (pending == None || !state.centerReveal)
+            )
+                Some(locate(held!!.offset, held!!.affinity))
+            else
+                None
+            val target = when (pending) {
+                case Some(val range) -> Some(locate(range.end, TextAffinity.Downstream))
+                case None -> None
+            }
+            val viewport = measureViewportRows(
+                index, size.height, estimate,
+                { visual ->
+                    measureBody(visual);
+                    Unit
+                },
+                { layoutScroll(size, gutter, pinned, held?.screenY ?: 0.0, target) }
+            )
+            for (visual in viewport.first..<viewport.end) {
                 val line = folds.line(visual)
                 val r = doc.lineRange(line)
-                val body = shapeSource(doc, r, line, opt, wrap, used)
+                val body = measured[visual]!!
                 val label = if (opt.lineNumbers)
                     Some(shape((line + 1L).toString(), gutterStyle, -1.0, 1L, used))
                 else
                     None
-                val h = positive(body.layout.size.height)
-                index.record(folds.index(line), h + (widgets.zones[line] ?: 0.0))
                 val original = ink.input.reverseMap?.map(r.start) ?: r.start
                 val header = opt.foldingControls &&
                     state.folding.header(state.document.positionAt(original).line)
                 rows
                     .add(
                         ScreenRow(
-                            line,
-                            r,
-                            body,
-                            label,
-                            index.prefix(visual) + (widgets.before[line] ?: 0.0),
-                            h,
-                            header
+                            line, r, body.retain(), label, index.prefix(visual) +
+                                (widgets.before[line] ?: 0.0),
+                            positive(body.layout.size.height), header
                         )
                     )
-                val measured = body.layout.size.width + gutter + 4.0
-                if (measured > maximumWidth) maximumWidth = measured
-                visual += 1L
             }
-            if (anchorLine >= 0L) {
-                val corrected = index.prefix(folds.index(anchorLine)) +
-                    (widgets.before[anchorLine] ?: 0.0) +
-                    withinAnchor
-                adjustment = Some(
-                    ScrollAdjustment(
-                        scroll.requestRevision,
-                        Point(x, if (corrected > 0.0) corrected else 0.0)
-                    )
-                )
-            }
-            offered = ink
-                .bars
-                .layout(
-                    size,
-                    Size(if (opt.softWrap) size.width else maximumWidth, index.total),
-                    adjustment
-                )
             var spaceWidth = 0.0
             if (opt.rulers.size > 0L) {
                 val space = shape(" ", opt.text, -1.0, opt.tabSize, used)
@@ -422,7 +453,7 @@ internal class CodeLayout(val ink: EditorInk) {
                 doc,
                 revision,
                 opt,
-                offered,
+                viewport.scroll,
                 size,
                 gutter,
                 rows.toArray(),
@@ -439,6 +470,8 @@ internal class CodeLayout(val ink: EditorInk) {
             }
             throw error
         } finally {
+            for (entry in measured)
+                entry.value.release()
             close()
             cache = used
         }

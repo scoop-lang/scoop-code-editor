@@ -1,0 +1,165 @@
+package scoop.ui.editor
+
+import scoop.graphics.Point
+import scoop.graphics.text.TextPosition
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.text.repeat
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+@Test
+private class WrappedViewportTests {
+    @Test(useProcess = true)
+    fun editingInsideAWrappedParagraphKeepsTheFirstFrameFilledAndAnchored() {
+        val probe = WrappedEditProbe()
+        UiHost(
+            onRootError = { _, error -> throw error },
+            handler = { h, a, e -> probe.event(h, a, e) }
+        )
+            .use { host -> Application().run(host) }
+        assertTrue(probe.finished)
+    }
+}
+
+private class WrappedEditProbe {
+    private val first = 2550L
+    private val paragraph = "整行文本会折行。One two three four. "
+    private val doc = CodeDocument(
+        "row\n".repeat(first) +
+            paragraph.repeat(120L) +
+            "\n\n" +
+            paragraph.repeat(12L) +
+            "\n\n" +
+            paragraph.repeat(7L) +
+            "\n\n" +
+            (paragraph.repeat(12L) + "\n\n").repeat(4L)
+    )
+    private val editor = CodeEditorState(doc)
+    private val at = doc.lineRange(first + 4L).start + paragraph.byteLength * 3L
+    private var stage = 0
+    private var queued = false
+    private var caretY = 0.0
+    private var paragraphHeight = 0.0
+    private var followingY = 0.0
+    var finished = false
+
+    fun event(host: UiHost, app: ActiveApplication, event: ApplicationEvent) {
+        when (event) {
+            case Resumed -> {
+                editor.options = CodeEditorOptions(softWrap = true)
+                val w = app
+                    .createWindow(
+                        windowAttributes {
+                            title = "Edit a wrapped paragraph"
+                            size = LogicalSize(720.0, 430.0)
+                        }
+                    )
+                val state = editor
+                host.attach(w, { scope -> WrappedEditRoot(state, scope) })
+                app
+                    .setControlFlow(
+                        ControlFlow.WaitUntil(MonotonicTimeSource.now() + Duration.seconds(20L))
+                    )
+            }
+
+            case AboutToWait -> {
+                val ink = editor.mounted ?: return
+                val frame = ink.currentFrame() ?: return
+                if (queued || finished || doc.version != frame.document.version) return
+                queued = true
+                app
+                    .proxy()
+                    .post { active ->
+                        queued = false
+                        val current = ink.currentFrame() ?: return@post
+                        advance(active, current)
+                    }
+            }
+
+            case NewEvents(StartCause.Deadline) -> fail(Some(f"wrapped viewport stage ${stage}"))
+            else -> {}
+        }
+    }
+
+    private fun advance(app: ActiveApplication, frame: EditorFrame) {
+        when (stage) {
+            case 0 -> editor.goTo(CodePosition(first, 0L))
+
+            case 1 -> {
+                val row = frame.rowAt(TextPosition(doc.lineRange(first).start))!!
+                assertTrue(row.height > frame.size.height)
+                editor.scroll.scrollTo(Point(0.0, row.top + row.height - 64.0))
+            }
+
+            case 2 -> editor.scroll.scrollBy(Point(0.0, 32.0))
+
+            case 3 -> {
+                editor.setSelections([CodeSelection.caret(at)])
+                caretY = frame.displayCaret(TextPosition(at))!!.y
+                assertTrue(caretY > 0.0 && caretY < frame.size.height)
+                checkRows(frame)
+                assertEquals(CodeEditResult.Applied, editor.typeText("d"))
+                editor.revealRange(editor.selections.primary.range)
+            }
+
+            case 4 -> {
+                checkRows(frame)
+                checkCaret(frame)
+                assertEquals(CodeEditResult.Applied, editor.undo())
+            }
+
+            case 5 -> {
+                checkRows(frame)
+                checkCaret(frame)
+                paragraphHeight = frame.rowAt(TextPosition(at))!!.height
+                followingY = frame.displayCaret(TextPosition(doc.lineRange(first + 5L).start))!!.y
+                assertEquals(CodeEditResult.Applied, editor.typeText(paragraph.repeat(4L)))
+            }
+
+            case 6 -> {
+                val growth = frame.rowAt(TextPosition(at))!!.height - paragraphHeight
+                assertTrue(growth > 0.0)
+                val next = frame.displayCaret(TextPosition(doc.lineRange(first + 5L).start))!!.y
+                assertTrue(next >= followingY + growth - 1.0 && next <= followingY + growth + 1.0)
+                checkRows(frame)
+                finished = true
+                app.requestExit()
+            }
+
+            else -> {}
+        }
+        stage += 1
+    }
+
+    private fun checkRows(frame: EditorFrame) {
+        val last = frame.rows[frame.rows.size - 1L]
+        assertTrue(frame.rows[0L].top <= frame.origin.y)
+        assertTrue(
+            last.top + last.height >= frame.origin.y + frame.size.height,
+            Some(
+                f"stage ${stage}: rows stop at ${last.top + last.height - frame.origin.y} of ${
+                    frame.size.height
+                }"
+            )
+        )
+        val bottom = frame.hit(Point(frame.gutter + 2.0, frame.size.height - 1.0))!!
+        val bottomLine = doc.positionAt(bottom.byteOffset).line
+        assertTrue(bottomLine > first + 4L, Some(f"stage ${stage}: bottom hit line ${bottomLine}"))
+        assertTrue(editor.visibleRanges()[0L].end >= bottom.byteOffset)
+    }
+
+    private fun checkCaret(frame: EditorFrame) {
+        val y = frame.displayCaret(editor.selections.primary.cursor)!!.y
+        assertTrue(
+            y >= caretY - 1.0 && y <= caretY + 1.0,
+            Some(f"stage ${stage}: visible caret moved from ${caretY} to ${y}")
+        )
+    }
+}
+
+private class WrappedEditRoot(val editor: CodeEditorState, scope: ComponentScope) :
+    Component(scope) {
+    public override fun render(): View = codeEditor(editor)
+}

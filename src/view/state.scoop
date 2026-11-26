@@ -94,7 +94,15 @@ public class CodeEditorState public constructor(public val document: CodeDocumen
         reveal = Some(range)
         when (mounted) {
             case Some(val ink) -> {
-                scroll.beginLayoutRequest();
+                val held = ink.layoutEngine.anchor
+                val previous = scroll.requestRevision
+                val request = scroll.beginLayoutRequest()
+                if (!center && held?.request == Some(previous)) {
+                    val a = held!!
+                    ink.layoutEngine.anchor = Some(
+                        ReadingAnchor(a.offset, a.screenY, request, a.affinity)
+                    )
+                }
                 ink.scope.requestLayout()
             };
 
